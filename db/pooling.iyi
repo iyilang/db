@@ -140,9 +140,11 @@ pub class Pool(T)
 
   # Closes every resource of the pool.
   def close : Nil
-    @total.each &.close
+    # closing a connection deletes it from `@total`: closed from a copy
+    resources = @total
     @total = [] of T
     @idle = Set(T).new
+    resources.each &.close
   end
 
   def stats : Stats

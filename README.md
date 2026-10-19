@@ -156,6 +156,7 @@ crystal-db's.
 | `disconnect!`-style names | no `!` in names | III.1.7 |
 | `DB::DriverSpecs.run do ... end` (implicit receiver) | `DriverSpecs.run do \|specs\| specs.... end` | no `with ... yield` |
 | `Connection::Options.from_http_params` read the statement cache default from `prepared_statements` | it reads `prepared_statements_cache` | a crystal-db bug, fixed |
+| `Pool#close` closes every other resource, as closing one takes it out of the list being walked | it closes every one | a crystal-db bug, fixed |
 
 ## Writing a driver
 

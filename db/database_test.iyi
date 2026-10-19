@@ -280,4 +280,11 @@ describe "Database" do
       end
     end
   end
+
+  it "closes every connection when it is closed" do
+    DummyConnection.clear_connections
+    ::Db.open("dummy://localhost:1027?initial_pool_size=3&max_idle_pool_size=3") { }.or_panic
+    assert connections.size == 3
+    assert connections.all?(&.closed?)
+  end
 end

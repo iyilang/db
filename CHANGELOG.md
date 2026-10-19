@@ -1,3 +1,8 @@
+## Unreleased
+
+* `Database#close` and `Pool#close` close every resource. They closed every
+  other one, as crystal-db's do, and left the rest open.
+
 ## v0.2.0
 
 Requires iyi 0.18.0, whose fixes for iyilang/iyi#121 to #128 this port no
