@@ -96,16 +96,7 @@ end
 # Registers a driver class for a given *driver_name*. Called by driver
 # implementors, from their module's top level, so importing the driver is
 # what registers it.
-#
-# Generic so the driver's own class never becomes the argument type of this
-# module's compiled code: a call with `PgDriver` would compile a
-# `register_driver(String, PgDriver.class)` that this module's artifact
-# cannot carry (iyi 0.17.0).
-pub def register_driver(driver_name : String, driver_class : D.class) : Nil forall D
-  store_driver(driver_name, driver_class.as(Driver.class))
-end
-
-def store_driver(driver_name : String, driver_class : Driver.class) : Nil
+pub def register_driver(driver_name : String, driver_class : Driver.class) : Nil
   DRIVERS[driver_name] = driver_class
 end
 
