@@ -109,35 +109,19 @@ end
 # according to each database driver's specific format.
 #
 # The returned database must be closed by `Database#close`.
-#
-# (A `String` and a `URI` overload rather than one `URI | String`: a call
-# compiles the method for the argument's own type, and an artifact carries
-# the method as declared, iyi 0.17.0.)
-pub def open(uri : String) : Database | DBError
-  parsed = parse_uri(uri)!
-  open(parsed)
-end
-
-# :ditto:
-pub def open(uri : URI) : Database | DBError
-  driver = build_driver(uri)!
-  params = Params.parse(uri.query || "")
+pub def open(uri : URI | String) : Database | DBError
+  parsed = to_uri(uri)!
+  driver = build_driver(parsed)!
+  params = Params.parse(parsed.query || "")
   connection_options = driver.connection_options(params)!
   pool_options = driver.pool_options(params)!
-  builder = driver.connection_builder(uri)!
+  builder = driver.connection_builder(parsed)!
   Database.open(connection_options, pool_options) { builder.build }
 end
 
 # Same as `open`, but the database is yielded and closed when the block is
 # left.
-pub def open(uri : String, & : Database -> U) : U | DBError forall U
-  db = open(uri)!
-  defer db.close
-  yield db
-end
-
-# :ditto:
-pub def open(uri : URI, & : Database -> U) : U | DBError forall U
+pub def open(uri : URI | String, & : Database -> U) : U | DBError forall U
   db = open(uri)!
   defer db.close
   yield db
@@ -146,34 +130,23 @@ end
 # Opens a connection using the specified *uri*. The scheme of the *uri*
 # determines the driver to use. The connection must be closed by
 # `Connection#close`.
-pub def connect(uri : String) : Connection | DBError
-  parsed = parse_uri(uri)!
-  connect(parsed)
-end
-
-# :ditto:
-pub def connect(uri : URI) : Connection | DBError
-  driver = build_driver(uri)!
-  builder = driver.connection_builder(uri)!
+pub def connect(uri : URI | String) : Connection | DBError
+  parsed = to_uri(uri)!
+  driver = build_driver(parsed)!
+  builder = driver.connection_builder(parsed)!
   builder.build
 end
 
 # Same as `connect`, but the connection is yielded and closed when the block
 # is left.
-pub def connect(uri : String, & : Connection -> U) : U | DBError forall U
+pub def connect(uri : URI | String, & : Connection -> U) : U | DBError forall U
   cnn = connect(uri)!
   defer cnn.close
   yield cnn
 end
 
-# :ditto:
-pub def connect(uri : URI, & : Connection -> U) : U | DBError forall U
-  cnn = connect(uri)!
-  defer cnn.close
-  yield cnn
-end
-
-def parse_uri(uri : String) : URI | DBError
+def to_uri(uri : URI | String) : URI | DBError
+  return uri if uri.is_a?(URI)
   URI.parse?(uri) || ArgumentError.new(%(invalid connection URI "#{uri}"))
 end
 
