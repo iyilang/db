@@ -93,6 +93,8 @@ pub class Pool(T)
   @idle : Set(T)
   # resources being built (in neither *@idle* nor *@total* yet)
   @inflight : Int32
+  # set by `close`: a closed pool builds and hands out nothing
+  @closed = false
 
   # tells a waiting checkout that a resource was released, or left the pool
   @availability_channel : Channel(Nil)
@@ -139,13 +141,17 @@ pub class Pool(T)
     nil
   end
 
-  # Closes every resource of the pool.
+  # Closes every resource of the pool, and answers every checkout from now
+  # on, the waiting ones too, with an error.
   def close : Nil
+    @closed = true
     # closing a connection deletes it from `@total`: closed from a copy
     resources = @total
     @total = [] of T
     @idle = Set(T).new
     resources.each &.close
+    while notify_available
+    end
   end
 
   def stats : Stats
@@ -163,6 +169,7 @@ pub class Pool(T)
     deadline = nil.as(Float64?)
     resource = nil
     until resource
+      return DBError.new("the pool is closed") if @closed
       if @idle.empty?
         if can_increase_pool?
           resource = build_resource!
@@ -194,6 +201,9 @@ pub class Pool(T)
   end
 
   def release(resource : T) : Nil
+    # `close` closed every resource the pool had
+    return if @closed
+
     if resource.responds_to?(:closed?) && resource.closed?
       @total.delete(resource)
     elsif can_increase_idle_pool
@@ -261,6 +271,11 @@ pub class Pool(T)
     defer @inflight -= 1
     resource = @factory.call
     return resource if resource.is_a?(DBError)
+    if @closed
+      # built while the pool was being closed
+      resource.close
+      return DBError.new("the pool is closed")
+    end
     @total << resource
     @idle.add resource
     resource

@@ -8,6 +8,8 @@
   build a new one, and waits `checkout_timeout` in all, however often it is
   woken. A `checkout_timeout` or `retry_delay` too long for a timer waits as
   long as one can, where it panicked.
+* A closed pool answers "the pool is closed" to every checkout, the waiting
+  ones too, where it built a new resource.
 
 ## v0.2.0
 

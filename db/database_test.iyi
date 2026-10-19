@@ -287,4 +287,10 @@ describe "Database" do
     assert connections.size == 3
     assert connections.all?(&.closed?)
   end
+
+  it "answers an error once it is closed" do
+    db = ::Db.open("dummy://localhost:1027").or_panic
+    db.close
+    expect_error(db.exec("stmt1"), DBError, "the pool is closed")
+  end
 end

@@ -304,4 +304,29 @@ describe "Db::Pool" do
       pool.release a
     end
   end
+
+  it "answers a waiting checkout when it is closed" do
+    pool = create_pool(Pool::Options.new(max_pool_size: 1, checkout_timeout: 2.0)) { Closable.new }
+    pool.checkout.or_panic
+    waited = [] of Span
+    group do |g|
+      g.spawn do
+        started = Time.monotonic
+        expect_error(pool.checkout, DBError, "the pool is closed")
+        waited << Time.monotonic - started
+        0
+      end
+      sleep 50
+      pool.close
+    end
+    assert waited[0] < Span.seconds(1)
+  end
+
+  it "builds nothing once it is closed" do
+    built = 0
+    pool = create_pool { built += 1; Closable.new }
+    pool.close
+    expect_error(pool.checkout, DBError, "the pool is closed")
+    assert built == 1
+  end
 end
