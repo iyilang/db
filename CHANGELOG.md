@@ -5,7 +5,9 @@
 * A factory that panics no longer leaves the pool counting a resource in
   flight.
 * A waiting checkout is woken when a resource leaves the pool, so it can
-  build a new one.
+  build a new one, and waits `checkout_timeout` in all, however often it is
+  woken. A `checkout_timeout` or `retry_delay` too long for a timer waits as
+  long as one can, where it panicked.
 
 ## v0.2.0
 

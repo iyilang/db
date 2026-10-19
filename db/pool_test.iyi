@@ -1,6 +1,7 @@
 # crystal-db's spec/pool_spec.cr.
 module db/pool_test
 
+import std/time::{Time, Span}
 import db/errors::*
 import db/core::{Disposable}
 import db/pooling::{Pool}
@@ -267,6 +268,39 @@ describe "Db::Pool" do
       end
       sleep 50
       a.close
+      pool.release a
+    end
+  end
+
+  it "waits checkout_timeout in all, however often it is woken" do
+    pool = create_pool(Pool::Options.new(max_pool_size: 1, checkout_timeout: 0.3)) { Closable.new }
+    a = pool.checkout.or_panic
+    waited = [] of Span
+    group do |g|
+      g.spawn do
+        started = Time.monotonic
+        expect_error(pool.checkout, PoolTimeout)
+        waited << Time.monotonic - started
+        0
+      end
+      sleep 200
+      # the release wakes the waiter, and the resource is taken again before
+      # the waiter runs
+      pool.release a
+      pool.checkout.or_panic
+    end
+    assert waited[0] < Span.milliseconds(450)
+  end
+
+  it "takes a checkout_timeout too long for a timer as waiting" do
+    pool = create_pool(Pool::Options.new(max_pool_size: 1, checkout_timeout: 1e10)) { Closable.new }
+    a = pool.checkout.or_panic
+    group do |g|
+      g.spawn do
+        assert pool.checkout.or_panic == a
+        0
+      end
+      sleep 50
       pool.release a
     end
   end

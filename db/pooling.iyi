@@ -13,6 +13,7 @@
 module db/pooling
 
 import std/uri::{Params}
+import std/time::{Time}
 import std/annotations::{Deprecated}
 import db/errors::*
 import db/query_params::*
@@ -159,15 +160,18 @@ pub class Pool(T)
   # An idle resource, a new one when the pool may grow, or one released
   # within `checkout_timeout`; `PoolTimeout` when none came.
   def checkout : T | DBError
+    deadline = nil.as(Float64?)
     resource = nil
     until resource
       if @idle.empty?
         if can_increase_pool?
           resource = build_resource!
         else
-          wait_for_available!
-          # The wait can wake several checkouts for one released resource.
-          # Only one of them finds it; the others go round again.
+          # one deadline for every wait: a woken checkout that finds the
+          # resource taken waits only what is left of it
+          limit = deadline || now_ms + @checkout_timeout * 1000
+          deadline = limit
+          wait_for_available(limit - now_ms)!
           resource = pick_available
         end
       else
@@ -219,7 +223,7 @@ pub class Pool(T)
 
     (current_available + @retry_attempts).times do |i|
       if i >= current_available
-        if sleep(seconds_to_ms(@retry_delay)).is_a?(Cancelled)
+        if sleep(timeout_ms(@retry_delay * 1000)).is_a?(Cancelled)
           return PoolRetryAttemptsExceeded.new("retry cancelled")
         end
       end
@@ -286,18 +290,28 @@ pub class Pool(T)
     woken
   end
 
-  private def wait_for_available : Nil | DBError
+  private def wait_for_available(ms : Float64) : Nil | DBError
     available = false
-    select
-    when @availability_channel.receive
-      available = true
-    when timeout(seconds_to_ms(@checkout_timeout))
+    if ms > 0
+      select
+      when @availability_channel.receive
+        available = true
+      when timeout(timeout_ms(ms))
+      end
     end
     return nil if available
     PoolTimeout.new("Could not check out a connection in #{@checkout_timeout} seconds")
   end
 
-  private def seconds_to_ms(seconds : Float64) : Int32
-    (seconds * 1000).to_i32
+  private def now_ms : Float64
+    Time.monotonic.total_milliseconds
+  end
+
+  # *ms* as a timer's milliseconds: rounded up, and a wait too long for an
+  # `Int32` is as long as one can be.
+  private def timeout_ms(ms : Float64) : Int32
+    return 2147483647 if ms >= 2147483647
+    return 0 if ms <= 0
+    ms.ceil.to_i32
   end
 end
