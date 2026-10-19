@@ -1171,7 +1171,8 @@ pub class Database
 
   # Runs the block every time a new connection is established, and now for
   # every idle one, yielding the connection. An error from the block keeps
-  # that connection out of the pool and is answered by whatever opened it.
+  # that connection out of the pool - an idle one is closed - and is
+  # answered by whatever opened it; here, the first one is.
   #
   # ```
   # db = Db.open(DB_URL)!
@@ -1182,11 +1183,17 @@ pub class Database
   # ```
   def setup_connection(&proc : Connection -> Nil | DBError) : Nil | DBError
     @setup_connection = proc
+    failed = nil.as(DBError?)
     @pool.each_resource do |conn|
+      # out of the pool for the setup: a statement it runs must not release it
+      conn.auto_release = false
       set_up = @setup_connection.call(conn)
-      return set_up if set_up.is_a?(DBError)
+      if set_up.is_a?(DBError)
+        conn.close
+        failed ||= set_up
+      end
     end
-    nil
+    failed
   end
 
   # Closes all connections to the database.

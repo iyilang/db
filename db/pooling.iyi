@@ -9,7 +9,8 @@
 # tasks share their group's thread and interleave only where one parks
 # (SPEC.md III.4.5), so the bookkeeping between two parks is already atomic and
 # the pool holds no lock. `@inflight` keeps counting the resources being built
-# while their builder is parked, as it does in crystal-db.
+# while their builder is parked, as it does in crystal-db, and `each_resource`
+# takes each resource out of the pool while its block may park.
 module db/pooling
 
 import std/uri::{Params}
@@ -251,9 +252,22 @@ pub class Pool(T)
     PoolRetryAttemptsExceeded.new
   end
 
-  # Yields every idle resource.
+  # Yields every idle resource. Each is out of the pool while its block
+  # runs, so a checkout cannot take it while the block parks, and goes back
+  # unless the block closed it.
   def each_resource(& : T -> Nil) : Nil
-    @idle.each { |resource| yield resource }
+    @idle.to_a.each do |resource|
+      # an earlier block parked, and a checkout took this one meanwhile
+      next unless @idle.includes?(resource)
+      @idle.delete resource
+      yield resource
+      if @closed || (resource.responds_to?(:closed?) && resource.closed?)
+        @total.delete(resource)
+      else
+        @idle.add resource
+      end
+      notify_available
+    end
   end
 
   def is_available?(resource : T) : Bool

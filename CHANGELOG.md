@@ -10,6 +10,9 @@
   long as one can, where it panicked.
 * A closed pool answers "the pool is closed" to every checkout, the waiting
   ones too, where it built a new resource.
+* `Database#setup_connection` takes each idle connection out of the pool
+  while it sets it up, so a statement the setup runs does not release it,
+  and closes the ones the setup fails on.
 
 ## v0.2.0
 

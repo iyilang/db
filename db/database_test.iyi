@@ -293,4 +293,26 @@ describe "Database" do
     db.close
     expect_error(db.exec("stmt1"), DBError, "the pool is closed")
   end
+
+  it "sets up an idle connection that ran a statement, and keeps it" do
+    with_dummy "dummy://localhost:1027?initial_pool_size=1&max_idle_pool_size=1" do |db|
+      db.exec("stmt1").or_panic
+      db.setup_connection do |cnn|
+        executed = cnn.exec("setup")
+        executed.is_a?(DBError) ? executed : nil
+      end.or_panic
+      assert connections.size == 1
+      assert !connections.first.closed?
+      assert db.pool.stats.idle_connections == 1
+    end
+  end
+
+  it "closes the idle connections their setup fails on" do
+    with_dummy "dummy://localhost:1027?initial_pool_size=2&max_idle_pool_size=2" do |db|
+      expect_error(db.setup_connection { |cnn| DBError.new("setup failed") }, DBError, "setup failed")
+      assert connections.size == 2
+      assert connections.all?(&.closed?)
+      assert db.pool.stats.open_connections == 0
+    end
+  end
 end
