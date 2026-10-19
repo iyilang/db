@@ -15,8 +15,7 @@ end
 
 describe "Db" do
   it "should get driver class by name" do
-    # a metaclass's `==` is not the class's identity in iyi's prelude
-    assert ::Db.driver_class("dummy").or_panic.to_s == DummyDriver.to_s
+    assert ::Db.driver_class("dummy").or_panic == DummyDriver
   end
 
   it "should create dummy connection" do
