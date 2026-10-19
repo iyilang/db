@@ -83,7 +83,7 @@ import std/uri::{URI, Params}
 import db/errors::*
 import db/core::*
 
-pub VERSION = "0.1.1"
+pub VERSION = "0.2.0"
 
 DRIVERS = {} of String => Driver.class
 

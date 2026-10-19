@@ -1,3 +1,20 @@
+## v0.2.0
+
+Requires iyi 0.18.0, whose fixes for iyilang/iyi#121 to #128 this port no
+longer works around.
+
+* The entry point is the package's root module, as crystal-db's is `DB`:
+  `import db` and `Db.open`, `Db.connect`, `Db.register_driver`,
+  `Db.driver_class` and `Db::VERSION`, where they were `import db/db/db`
+  and `Db::Db.open`. The other modules are where they were.
+* `Db.open` and `Db.connect` take a `URI | String`, as crystal-db's do.
+* `Db.register_driver` takes a `Driver.class`.
+* A driver's `read` overload for a nilable type can be written `def read(t
+  : Int32?.class)`.
+* The "Executing query" debug entry carries the query and its arguments as
+  the entry's `query` and `args` data, as crystal-db's does, where they were
+  written into the message.
+
 ## v0.1.1
 
 The modules move from `iyi_db/` to `db/`, so their namespace is `Db::...`
