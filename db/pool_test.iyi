@@ -255,4 +255,19 @@ describe "Db::Pool" do
     assert panics? { pool.checkout; nil }
     assert pool.stats.in_flight_connections == 0
   end
+
+  it "wakes a waiting checkout when a resource leaves the pool" do
+    pool = create_pool(Pool::Options.new(max_pool_size: 1, checkout_timeout: 1.0)) { Closable.new }
+    a = pool.checkout.or_panic
+    group do |g|
+      g.spawn do
+        # a timeout would be a panic: the pool may build a new resource
+        assert pool.checkout.or_panic != a
+        0
+      end
+      sleep 50
+      a.close
+      pool.release a
+    end
+  end
 end

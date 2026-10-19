@@ -93,7 +93,7 @@ pub class Pool(T)
   # resources being built (in neither *@idle* nor *@total* yet)
   @inflight : Int32
 
-  # tells a waiting checkout that a resource was released
+  # tells a waiting checkout that a resource was released, or left the pool
   @availability_channel : Channel(Nil)
 
   @factory : Proc(T | DBError)
@@ -190,8 +190,6 @@ pub class Pool(T)
   end
 
   def release(resource : T) : Nil
-    idle_pushed = false
-
     if resource.responds_to?(:closed?) && resource.closed?
       @total.delete(resource)
     elsif can_increase_idle_pool
@@ -199,18 +197,14 @@ pub class Pool(T)
       if resource.responds_to?(:after_release)
         resource.after_release
       end
-      idle_pushed = true
     else
       resource.close
       @total.delete(resource)
     end
 
-    if idle_pushed
-      select
-      when @availability_channel.send(nil)
-      else
-      end
-    end
+    # a waiting checkout takes the idle resource, or builds one in the room
+    # this one left
+    notify_available
   end
 
   # Runs the block again while it answers a lost or refused resource. Every
@@ -255,6 +249,7 @@ pub class Pool(T)
   def delete(resource : T) : Nil
     @total.delete(resource)
     @idle.delete(resource)
+    notify_available
   end
 
   private def build_resource : T | DBError
@@ -278,6 +273,17 @@ pub class Pool(T)
   private def pick_available : T?
     @idle.each { |resource| return resource }
     nil
+  end
+
+  # Wakes one waiting checkout, if there is one.
+  private def notify_available : Bool
+    woken = false
+    select
+    when @availability_channel.send(nil)
+      woken = true
+    else
+    end
+    woken
   end
 
   private def wait_for_available : Nil | DBError

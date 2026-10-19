@@ -4,6 +4,8 @@
   other one, as crystal-db's do, and left the rest open.
 * A factory that panics no longer leaves the pool counting a resource in
   flight.
+* A waiting checkout is woken when a resource leaves the pool, so it can
+  build a new one.
 
 ## v0.2.0
 
