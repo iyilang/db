@@ -114,8 +114,9 @@ property for. `Employee.from_db_row(rs)` reads the current row and
 
 ### Logging and instrumentation
 
-Every statement logs `Executing query -- query: "...", args: [...]` at debug
-level to the std/log logger `"db"` (`Db::Core::LOG`).
+Every statement logs `Executing query` at debug level to the std/log logger
+`"db"` (`Db::Core::LOG`), with the query and its arguments as the entry's
+data: `Executing query -- query="select name from contacts where age > ?" args=[18]`.
 `Statement.def_around_query_or_exec { |stmt, args, run| ...; run.call; ... }`
 wraps every query a driver runs.
 

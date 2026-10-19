@@ -35,7 +35,8 @@ import db/value::*
 import db/query_params::*
 import db/pooling::*
 
-# The logger every statement writes "Executing query" to, at debug level.
+# The logger every statement writes "Executing query" to, at debug level,
+# with the query and its arguments as the entry's `query` and `args` data.
 # crystal-db's `DB::Log`; its source is "db".
 pub LOG = Log.for("db")
 
@@ -723,7 +724,8 @@ pub abstract class Statement
   end
 
   protected def emit_log(args : Array(DBValue)) : Nil
-    LOG.debug { "Executing query -- query: #{command.inspect}, args: #{args_to_log(args)}" }
+    return unless LOG.debug?
+    LOG.debug("Executing query", query: command, args: args_to_log(args))
   end
 end
 

@@ -1,7 +1,7 @@
 # crystal-db's spec/statement_spec.cr.
 module db/statement_test
 
-import std/log::{Log, MemoryBackend, Severity}
+import std/log::{Log, Entry, MemoryBackend, Severity}
 import db
 import db/errors::*
 import db/core::*
@@ -12,8 +12,8 @@ def dummy_prepared(cnn : DummyConnection, query : String) : DummyStatement
   cnn.prepared(query).or_panic.as(DummyStatement)
 end
 
-# The debug entries LOG wrote while running the block.
-def capture_log(& : -> Nil) : Array(String)
+# The "Executing query" entries LOG wrote while running the block.
+def capture_log(& : -> Nil) : Array(Entry)
   backend = MemoryBackend.new
   LOG.backend = backend
   previous_level = LOG.level
@@ -21,7 +21,7 @@ def capture_log(& : -> Nil) : Array(String)
   defer LOG.backend = nil
   defer LOG.level = previous_level
   yield
-  backend.entries.select { |e| e.severity == Severity::Debug }.map { |e| e.message }
+  backend.entries.select { |e| e.severity == Severity::Debug && e.message == "Executing query" }
 end
 
 describe "Statement" do
@@ -295,23 +295,21 @@ describe "Statement" do
     end
   end
 
-  # crystal checks the entries' structured data; iyi's log entries carry the
-  # rendered message (`Executing query -- query: "42", args: []`).
   describe "logging" do
     it "exec with no arguments" do
-      messages = capture_log do
+      entries = capture_log do
         with_dummy do |db|
           db.exec("42").or_panic
         end
       end
 
-      entries = messages.select(&.includes?("Executing query"))
       assert entries.size >= 1
-      assert entries[0] == %(Executing query -- query: "42", args: [])
+      assert entries[0].data["query"] == "42"
+      assert entries[0].data["args"] == "[]"
     end
 
     it "query with arguments" do
-      messages = capture_log do
+      entries = capture_log do
         with_dummy do |db|
           db.exec("1, ?", args: ["a"]).or_panic
           db.exec("2, ?", "a").or_panic
@@ -319,11 +317,13 @@ describe "Statement" do
         end
       end
 
-      entries = messages.select(&.includes?("Executing query"))
       assert entries.size == 3
-      assert entries[0] == %(Executing query -- query: "1, ?", args: ["a"])
-      assert entries[1] == %(Executing query -- query: "2, ?", args: ["a"])
-      assert entries[2] == %(Executing query -- query: "3, ?", args: [["a"]])
+      assert entries[0].data["query"] == "1, ?"
+      assert entries[0].data["args"] == %(["a"])
+      assert entries[1].data["query"] == "2, ?"
+      assert entries[1].data["args"] == %(["a"])
+      assert entries[2].data["query"] == "3, ?"
+      assert entries[2].data["args"] == %([["a"]])
     end
   end
 
