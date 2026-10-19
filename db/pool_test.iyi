@@ -4,7 +4,7 @@ module db/pool_test
 import db/errors::*
 import db/core::{Disposable}
 import db/pooling::{Pool}
-import db/spec::{describe, it, expect_error}
+import db/spec::{describe, it, expect_error, panics?}
 # crystal's spec_helper loads the dummy driver too; without a Statement
 # subclass in the program db/core does not type (see the port report).
 import db/testing/dummy_driver::*
@@ -248,5 +248,11 @@ describe "Db::Pool" do
     pool.checkout.or_panic
 
     assert all.size == 4
+  end
+
+  it "counts no resource in flight after the factory panicked" do
+    pool = Pool(Closable).new(Pool::Options.new(initial_pool_size: 0, max_pool_size: 1)) { raise "factory failed" }
+    assert panics? { pool.checkout; nil }
+    assert pool.stats.in_flight_connections == 0
   end
 end

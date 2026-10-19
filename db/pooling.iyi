@@ -163,11 +163,7 @@ pub class Pool(T)
     until resource
       if @idle.empty?
         if can_increase_pool?
-          @inflight += 1
-          built = build_resource
-          @inflight -= 1
-          return built if built.is_a?(DBError)
-          resource = built
+          resource = build_resource!
         else
           wait_for_available!
           # The wait can wake several checkouts for one released resource.
@@ -262,6 +258,8 @@ pub class Pool(T)
   end
 
   private def build_resource : T | DBError
+    @inflight += 1
+    defer @inflight -= 1
     resource = @factory.call
     return resource if resource.is_a?(DBError)
     @total << resource

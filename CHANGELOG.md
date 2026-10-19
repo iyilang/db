@@ -2,6 +2,8 @@
 
 * `Database#close` and `Pool#close` close every resource. They closed every
   other one, as crystal-db's do, and left the rest open.
+* A factory that panics no longer leaves the pool counting a resource in
+  flight.
 
 ## v0.2.0
 
