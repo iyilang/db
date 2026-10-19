@@ -84,14 +84,9 @@ pub macro db_serializable_with(declaration, strict)
   def self.from_rs(rs : ::Db::Core::ResultSet) : Array(self) | ::Db::Errors::DBError
     defer rs.close
     objects = [] of self
-    # A macro body cannot hold `end!`: its scanner counts `end` to find
-    # where the macro stops.
-    iterated = rs.each do
-      object = from_db_row(rs)
-      return object if object.is_a?(::Db::Errors::DBError)
-      objects << object
-    end
-    return iterated if iterated.is_a?(::Db::Errors::DBError)
+    rs.each do
+      objects << from_db_row(rs)!
+    end!
     objects
   end
 
