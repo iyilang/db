@@ -167,11 +167,6 @@ abstract methods say what to implement; the comments on `Driver`,
 `ConnectionLost.new(connection)`, so the pool retries on another one. Values
 of the driver's own types are classes inheriting `CustomValue`.
 
-A `read` overload for a nilable type is written `def read(t : (Int32 |
-Nil).class)`: iyi 0.17.0 writes the short `Int32?.class` into a module's
-artifact as `Int32 | ::Nil.class`, which a program built from artifacts
-does not match.
-
 Test a driver with the shared specs:
 
 ```iyi

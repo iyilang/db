@@ -420,9 +420,7 @@ class MemoryResultSet < ResultSet
     end
   end
 
-  # `(Int32 | Nil).class`, not `Int32?.class`: iyi 0.17.0 writes the short
-  # spelling into an artifact as `Int32 | ::Nil.class`.
-  def read(t : (Int32 | Nil).class) : Int32? | DBError
+  def read(t : Int32?.class) : Int32? | DBError
     index = next_column_index
     value = read!
     case value

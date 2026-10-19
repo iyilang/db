@@ -260,10 +260,7 @@ pub class DummyResultSet < ResultSet
     read!.to_s
   end
 
-  # `(String | Nil).class`, not `String?.class`: iyi 0.17.0 writes the short
-  # spelling into an artifact as `String | ::Nil.class`, which matches
-  # nothing.
-  def read(t : (String | Nil).class) : String? | DBError
+  def read(t : String?.class) : String? | DBError
     value = read!
     value.nil? ? nil : value.to_s
   end
@@ -273,7 +270,7 @@ pub class DummyResultSet < ResultSet
     text.to_i? || ArgumentError.new("Invalid Int32: #{text.inspect}")
   end
 
-  def read(t : (Int32 | Nil).class) : Int32? | DBError
+  def read(t : Int32?.class) : Int32? | DBError
     text = read(String?)!
     return nil if text.nil?
     text.to_i? || ArgumentError.new("Invalid Int32: #{text.inspect}")
@@ -284,7 +281,7 @@ pub class DummyResultSet < ResultSet
     text.to_i64? || ArgumentError.new("Invalid Int64: #{text.inspect}")
   end
 
-  def read(t : (Int64 | Nil).class) : Int64? | DBError
+  def read(t : Int64?.class) : Int64? | DBError
     text = read(String?)!
     return nil if text.nil?
     text.to_i64? || ArgumentError.new("Invalid Int64: #{text.inspect}")
