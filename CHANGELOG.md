@@ -15,6 +15,10 @@
   and closes the ones the setup fails on.
 * The statement cache builds a new statement in place of one its user
   closed.
+* `query` with a block, `query_one`, `query_one?`, `query_all`,
+  `query_each`, `scalar` and `Db.connect` with a block answer the error
+  closing what they opened, unless they answer an error already, as
+  crystal-db raised it from its `ensure`.
 
 ## v0.2.0
 

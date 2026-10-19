@@ -138,11 +138,17 @@ pub def connect(uri : URI | String) : Connection | DBError
 end
 
 # Same as `connect`, but the connection is yielded and closed when the block
-# is left.
+# is left. An error closing it is answered, unless the block answered an
+# error of its own.
 pub def connect(uri : URI | String, & : Connection -> U) : U | DBError forall U
   cnn = connect(uri)!
-  defer cnn.close
-  yield cnn
+  finished = false
+  defer (cnn.close unless finished)
+  value = yield cnn
+  finished = true
+  closed = cnn.close
+  return closed if closed.is_a?(DBError) && !value.is_a?(::Error)
+  value
 end
 
 def to_uri(uri : URI | String) : URI | DBError

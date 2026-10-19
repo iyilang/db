@@ -141,6 +141,10 @@ end
 # Int32)` (crystal-db wrote `as: {String, Int32}`, a tuple of classes whose
 # instance type no signature can name, R-2).
 #
+# The forms that close the result set they opened - `scalar`, `query` with a
+# block, `query_one`, `query_one?`, `query_all`, `query_each` - answer the
+# error closing it, unless they answer an error already.
+#
 # An implementer has a `build(query : String)` answering a statement or a
 # `DBError`.
 pub trait QueryMethods
@@ -170,8 +174,13 @@ pub trait QueryMethods
   # ```
   def query(query : String, *args_ : *T, args : Array(A)? = nil, & : ResultSet -> U) : U | DBError forall T, A, U
     rs = query(query, *args_, args: args)!
-    defer rs.close
-    yield rs
+    finished = false
+    defer (rs.close unless finished)
+    value = yield rs
+    finished = true
+    closed = rs.close
+    return closed if closed.is_a?(DBError) && !value.is_a?(::Error)
+    value
   end
 
   # Executes a *query* that expects a single row and yields a `ResultSet`
@@ -187,10 +196,14 @@ pub trait QueryMethods
   # ```
   def query_one(query : String, *args_ : *T, args : Array(A)? = nil, & : ResultSet -> U) : U | DBError forall T, A, U
     rs = query(query, *args_, args: args)!
-    defer rs.close
+    finished = false
+    defer (rs.close unless finished)
     return NoResultsError.new("no results") unless rs.move_next!
     value = yield rs
     return DBError.new("more than one row") if rs.move_next!
+    finished = true
+    closed = rs.close
+    return closed if closed.is_a?(DBError) && !value.is_a?(::Error)
     value
   end
 
@@ -218,10 +231,14 @@ pub trait QueryMethods
   # ```
   def query_one?(query : String, *args_ : *T, args : Array(A)? = nil, & : ResultSet -> U) : U | Nil | DBError forall T, A, U
     rs = query(query, *args_, args: args)!
-    defer rs.close
+    finished = false
+    defer (rs.close unless finished)
     return nil unless rs.move_next!
     value = yield rs
     return DBError.new("more than one row") if rs.move_next!
+    finished = true
+    closed = rs.close
+    return closed if closed.is_a?(DBError) && !value.is_a?(::Error)
     value
   end
 
@@ -266,11 +283,13 @@ pub trait QueryMethods
   # ```
   def query_each(query : String, *args_ : *T, args : Array(A)? = nil, & : ResultSet -> Nil) : Nil | DBError forall T, A
     rs = query(query, *args_, args: args)!
-    defer rs.close
+    finished = false
+    defer (rs.close unless finished)
     while rs.move_next!
       yield rs
     end
-    nil
+    finished = true
+    rs.close
   end
 
   # Performs the *query* and returns an `ExecResult`.
@@ -372,17 +391,27 @@ pub trait StatementMethods
   # `NoResultsError` when there is none.
   def scalar(*args_ : *T, args : Array(A)? = nil) : DBValue | DBError forall T, A
     rs = query(*args_, args: args)!
-    defer rs.close
-    return rs.read if rs.move_next!
-    NoResultsError.new("no results")
+    finished = false
+    defer (rs.close unless finished)
+    return NoResultsError.new("no results") unless rs.move_next!
+    value = rs.read
+    finished = true
+    closed = rs.close
+    return closed if closed.is_a?(DBError) && !value.is_a?(::Error)
+    value
   end
 
   # Runs the statement and yields its `ResultSet`, closed when the block is
   # left.
   def query(*args_ : *T, args : Array(A)? = nil, & : ResultSet -> U) : U | DBError forall T, A, U
     rs = query(*args_, args: args)!
-    defer rs.close
-    yield rs
+    finished = false
+    defer (rs.close unless finished)
+    value = yield rs
+    finished = true
+    closed = rs.close
+    return closed if closed.is_a?(DBError) && !value.is_a?(::Error)
+    value
   end
 end
 

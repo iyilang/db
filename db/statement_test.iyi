@@ -305,6 +305,29 @@ describe "Statement" do
     end
   end
 
+  describe "a result set that fails to close" do
+    it "answers the error from every form that closes it" do
+      with_dummy_connection do |cnn|
+        expect_error(cnn.query("fail_close") { |rs| 1 }, DBError, "forced exception on close")
+        expect_error(cnn.query_one("fail_close") { |rs| rs.read }, DBError, "forced exception on close")
+        expect_error(cnn.query_one?("fail_close") { |rs| rs.read }, DBError, "forced exception on close")
+        expect_error(cnn.query_each("fail_close") { |rs| }, DBError, "forced exception on close")
+        expect_error(cnn.scalar("fail_close"), DBError, "forced exception on close")
+        stmt = cnn.prepared("fail_close").or_panic
+        expect_error(stmt.query { |rs| 1 }, DBError, "forced exception on close")
+        expect_error(stmt.scalar, DBError, "forced exception on close")
+        nil
+      end
+    end
+
+    it "answers the block's own error over it" do
+      with_dummy_connection do |cnn|
+        expect_error(cnn.query("fail_close") { |rs| DBError.new("block failed") }, DBError, "block failed")
+        nil
+      end
+    end
+  end
+
   describe "logging" do
     it "exec with no arguments" do
       entries = capture_log do

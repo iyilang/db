@@ -5,8 +5,9 @@
 # commas. `"3,4 1,2"` answers two rows of two columns, `NULL` is a nil, `?`
 # is the first bound argument, and a column that reads as an integer is an
 # `Int64`. A few queries misbehave on purpose: `"syntax error"` cannot be
-# prepared, `"raise ConnectionLost"` loses the connection, and an exec of
-# `"raise"` fails.
+# prepared, `"raise ConnectionLost"` loses the connection, an exec of
+# `"raise"` fails, and the result set of `"fail_close"` answers an error
+# when it is closed.
 module db/testing/dummy_driver
 
 import std/uri::{URI, Params}
@@ -225,6 +226,13 @@ pub class DummyResultSet < ResultSet
 
   def self.last_result_set : DummyResultSet
     @@last_result_set || raise "no result set yet"
+  end
+
+  protected def do_close : Nil | DBError
+    released = super
+    return released if released.is_a?(DBError)
+    return DBError.new("forced exception on close") if @statement.command == "fail_close"
+    nil
   end
 
   def move_next : Bool | DBError
