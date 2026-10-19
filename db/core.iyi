@@ -845,16 +845,8 @@ pub abstract class ResultSet
       col_index = next_column_index
       value = read!
       if value.is_a?(T)
-        # `is_a?` narrows a single type and not a union such as `Int32?`, so
-        # the value is cast; and a `.as(String?)` of a `DBValue` reads the
-        # wrong bytes (iyi 0.17.0), so a nilable type answers its nil here
-        # and casts the rest to the type without `Nil`.
-        {% if T.nilable? %}
-          return nil if value.nil?
-          value.as(typeof(value.as(T) || raise("")))
-        {% else %}
-          value.as(T)
-        {% end %}
+        # `is_a?` narrows a single type and not a union such as `Int32?`
+        value.as(T)
       else
         ColumnTypeMismatchError.new(
           context: "#{self.class}#read",
