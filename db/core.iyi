@@ -150,10 +150,7 @@ pub trait QueryMethods
   # end
   # ```
   def query(query : String, *args_ : *T, args : Array(A)? = nil) : ResultSet | DBError forall T, A
-    # bound first: `x!.call` does not survive the round trip through an
-    # artifact's shipped body
-    stmt = build(query)!
-    stmt.query(*args_, args: args)
+    build(query)!.query(*args_, args: args)
   end
 
   # Executes a *query* and yields a `ResultSet` with the results.
