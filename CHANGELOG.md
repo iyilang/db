@@ -19,6 +19,8 @@
   `query_each`, `scalar` and `Db.connect` with a block answer the error
   closing what they opened, unless they answer an error already, as
   crystal-db raised it from its `ensure`.
+* A `transaction` block that answers `Rollback` answers the error of a
+  rollback that fails, where it answered `nil`.
 
 ## v0.2.0
 

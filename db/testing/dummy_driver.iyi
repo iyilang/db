@@ -6,8 +6,8 @@
 # is the first bound argument, and a column that reads as an integer is an
 # `Int64`. A few queries misbehave on purpose: `"syntax error"` cannot be
 # prepared, `"raise ConnectionLost"` loses the connection, an exec of
-# `"raise"` fails, and the result set of `"fail_close"` answers an error
-# when it is closed.
+# `"raise"` or of a connection's `failing_command` fails, and the result
+# set of `"fail_close"` answers an error when it is closed.
 module db/testing/dummy_driver
 
 import std/uri::{URI, Params}
@@ -39,6 +39,10 @@ pub class DummyConnection < Connection
   @@connections_count = 0
 
   @connected = true
+
+  # A command every statement of this connection fails to run, as `"raise"`
+  # does: `"ROLLBACK"` makes the rollbacks fail.
+  property failing_command : String? = nil
 
   def initialize(options : Connection::Options)
     super(options)
@@ -188,7 +192,9 @@ pub class DummyStatement < Statement
     @@statements_exec_count += 1
     @connection.as(DummyConnection).check!
     set_params args
-    return DBError.new("forced exception due to query") if command == "raise"
+    if command == "raise" || command == @connection.as(DummyConnection).failing_command
+      return DBError.new("forced exception due to query")
+    end
     ExecResult.new 0_i64, 0_i64
   end
 

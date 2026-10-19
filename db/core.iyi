@@ -433,7 +433,8 @@ pub trait BeginTransaction
   #   transaction is rolled back;
   # * the block ended the transaction itself with `commit` or `rollback`.
   #
-  # A rollback that fails is not answered over the block's own error, nor
+  # A rollback that fails is answered when the block answered `Rollback`,
+  # which asked for it. It is not answered over the block's own error, nor
   # after an early exit, which has no value to carry it: crystal-db raised
   # it from its `ensure`, replacing the exception being handled.
   def transaction(& : Transaction -> T) : T | Nil | DBError forall T
@@ -445,8 +446,10 @@ pub trait BeginTransaction
     value = yield tx
     finished = true
     if value.is_a?(::Error)
-      tx.rollback unless tx.closed?
-      return nil if value.is_a?(Rollback)
+      rolled_back = tx.closed? ? nil : tx.rollback
+      if value.is_a?(Rollback)
+        return rolled_back.is_a?(DBError) ? rolled_back : nil
+      end
       return value
     end
     tx.commit! unless tx.closed?
