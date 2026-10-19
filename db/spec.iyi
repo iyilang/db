@@ -742,8 +742,9 @@ pub class DriverSpecs
 
   # The value of a call that must not fail; a failure panics, which fails
   # the example. A function rather than `.or_panic` in place, because a
-  # `.or_panic` inside a call's arguments does not survive the round trip
-  # through an artifact's shipped body (iyi 0.17.0).
+  # `.or_panic` that is the receiver of another call inside a call's
+  # arguments (`assert x.or_panic.nil?`) is written into an artifact's
+  # shipped body as text that does not parse (iyi 0.18.0).
   private def ok(value : V) forall V
     value.or_panic
   end

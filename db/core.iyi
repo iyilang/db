@@ -54,7 +54,7 @@ pub trait Disposable
   # Returns `true` if this object is closed. See `#close`.
   def closed? : Bool
     # compared, not answered: read through an artifact, an implementer's
-    # `@closed` can come back typed `Bool | Nil` (iyi 0.17.0)
+    # `@closed` can come back typed `Bool | Nil` (iyi 0.18.0)
     @closed == true
   end
 end

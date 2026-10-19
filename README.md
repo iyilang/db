@@ -13,7 +13,7 @@ require: errors are values, types are closed, and tasks are structured.
 
 ## Requirements
 
-iyi 0.17.0 or later.
+iyi 0.18.0 or later.
 
 ## Installation
 
@@ -201,7 +201,7 @@ two programs crystal-db runs by hand:
 
 `iyi check` a program, not a module that only queries: a block passed to
 `Database#query` is typed through the driver's `Statement`, and a module
-with no driver in it has none, so iyi 0.17.0 reports "can't infer block
+with no driver in it has none, so iyi 0.18.0 reports "can't infer block
 return type" there. A program that imports a driver checks clean.
 
 ## Contributors
