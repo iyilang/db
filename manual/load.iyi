@@ -8,7 +8,7 @@
 module manual/load
 
 import std/text
-import db/db
+import db
 import db/errors::{DBError}
 import db/testing/dummy_driver::*
 
@@ -34,7 +34,7 @@ end
 # crystal's block-form `DB.open` returned while the producers still ran;
 # here the producers' group keeps the database open until they are done.
 def start_producers(channel : TChannel)
-  ::Db::Db.open CONNECTION do |db|
+  ::Db.open CONNECTION do |db|
     sql = "1,title,description,2023 " * 100_000
 
     group do |g|

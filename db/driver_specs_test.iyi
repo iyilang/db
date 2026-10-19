@@ -16,7 +16,7 @@ module db/driver_specs_test
 
 import std/uri::{URI, Params}
 import std/text
-import db/db
+import db
 import db/errors::*
 import db/value::*
 import db/core::*
@@ -448,7 +448,7 @@ class MemoryResultSet < ResultSet
   end
 end
 
-::Db::Db.register_driver "memory", MemoryDriver
+::Db.register_driver "memory", MemoryDriver
 
 # The `prepared_statements` value of every run of the `:both` example below.
 PREPARED_RUNS = [] of Bool

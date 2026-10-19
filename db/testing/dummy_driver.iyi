@@ -12,7 +12,7 @@ module db/testing/dummy_driver
 import std/uri::{URI, Params}
 import std/text
 import std/slice::{Slice, Bytes}
-import db/db
+import db
 import db/errors::*
 import db/value::*
 import db/core::*
@@ -316,7 +316,7 @@ pub class DummyResultSet < ResultSet
   end
 end
 
-::Db::Db.register_driver "dummy", DummyDriver
+::Db.register_driver "dummy", DummyDriver
 
 # Counts down the checks an example expects, so a block that should have
 # run and did not fails the example.
@@ -339,7 +339,7 @@ end
 
 pub def with_dummy(uri : String = "dummy://host?checkout_timeout=0.5", & : Database -> Nil) : Nil
   DummyConnection.clear_connections
-  ::Db::Db.open(uri) { |db| yield db }.or_panic
+  ::Db.open(uri) { |db| yield db }.or_panic
 end
 
 pub def with_dummy_connection(options : String = "", & : DummyConnection -> Nil) : Nil

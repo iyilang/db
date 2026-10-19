@@ -13,7 +13,7 @@ pub import db/core
 
 import std/uri::{URI, Params}
 import std/text
-import db/db
+import db
 import db/errors::*
 import db/value::*
 import db/core::*
@@ -445,7 +445,7 @@ pub class DriverSpecs
     end
 
     it "can create direct connection" do
-      ::Db::Db.connect(connection_string) do |cnn|
+      ::Db.connect(connection_string) do |cnn|
         assert cnn.is_a?(Connection)
         assert ok(cnn.scalar(select_scalar(encode_null, nil))).nil?
       end.or_panic
@@ -610,7 +610,7 @@ pub class DriverSpecs
       connection_string_with_options = uri.to_s
     end
 
-    ::Db::Db.open(connection_string_with_options) do |db|
+    ::Db.open(connection_string_with_options) do |db|
       db.exec(sql_drop_table("table1")).or_panic
       db.exec(sql_drop_table("table2")).or_panic
       db.exec(sql_drop_table("person")).or_panic

@@ -2,7 +2,7 @@
 module db/dummy_driver_test
 
 import std/slice::{Slice, Bytes}
-import db/db
+import db
 import db/errors::*
 import db/value::*
 import db/core::*

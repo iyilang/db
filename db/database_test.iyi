@@ -1,7 +1,7 @@
 # crystal-db's spec/database_spec.cr.
 module db/database_test
 
-import db/db
+import db
 import db/errors::*
 import db/core::*
 import db/spec::{describe, it, expect_error}
@@ -14,7 +14,7 @@ end
 describe "Database" do
   it "allows connection initialization" do
     cnn_setup = [0]
-    ::Db::Db.open "dummy://localhost:1027?initial_pool_size=2&max_pool_size=4&max_idle_pool_size=1" do |db|
+    ::Db.open "dummy://localhost:1027?initial_pool_size=2&max_pool_size=4&max_idle_pool_size=1" do |db|
       # crystal's constructor opened the initial connections; iyi's pool opens them on prefill
       db.pool.prefill.or_panic
       assert cnn_setup[0] == 0
@@ -56,7 +56,7 @@ describe "Database" do
   end
 
   it "should allow creation of more statements than pool connections" do
-    ::Db::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=2" do |db|
+    ::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=2" do |db|
       assert db.build("query1").or_panic.is_a?(PoolPreparedStatement)
       assert db.build("query2").or_panic.is_a?(PoolPreparedStatement)
       assert db.build("query3").or_panic.is_a?(PoolPreparedStatement)
@@ -73,7 +73,7 @@ describe "Database" do
 
   it "should not reconnect if connection is lost and retry_attempts=0" do
     DummyConnection.clear_connections
-    ::Db::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=1&retry_attempts=0" do |db|
+    ::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=1&retry_attempts=0" do |db|
       db.exec("stmt1").or_panic
       assert connections.size == 1
       connections.first.disconnect
@@ -84,7 +84,7 @@ describe "Database" do
 
   it "should reconnect if connection is lost and executing same statement" do
     DummyConnection.clear_connections
-    ::Db::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=1&retry_attempts=1" do |db|
+    ::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=1&retry_attempts=1" do |db|
       db.exec("stmt1").or_panic
       assert connections.size == 1
       connections.first.disconnect
@@ -95,7 +95,7 @@ describe "Database" do
 
   it "should allow new connections if pool can increased and retry is not allowed" do
     DummyConnection.clear_connections
-    ::Db::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=2&retry_attempts=0" do |db|
+    ::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=2&retry_attempts=0" do |db|
       db.query("stmt1").or_panic
       assert connections.size == 1
       db.query("stmt1").or_panic
@@ -105,7 +105,7 @@ describe "Database" do
 
   it "should not return connection to pool if checkout explicitly" do
     DummyConnection.clear_connections
-    ::Db::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=1&retry_attempts=0" do |db|
+    ::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=1&retry_attempts=0" do |db|
       the_cnn : Connection? = nil
       db.using_connection do |cnn|
         the_cnn = cnn
@@ -125,7 +125,7 @@ describe "Database" do
 
   it "should checkout different connections until they are released" do
     DummyConnection.clear_connections
-    ::Db::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=2&retry_attempts=0" do |db|
+    ::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=2&retry_attempts=0" do |db|
       the_first_cnn = db.checkout.or_panic
       the_second_cnn = db.checkout.or_panic
       assert the_second_cnn != the_first_cnn
@@ -144,7 +144,7 @@ describe "Database" do
 
   it "should not return explicit checked out connections to the pool after query" do
     DummyConnection.clear_connections
-    ::Db::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=2&retry_attempts=0" do |db|
+    ::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=2&retry_attempts=0" do |db|
       cnn = db.checkout.or_panic
 
       cnn.query_all("1", as: String).or_panic
@@ -173,7 +173,7 @@ describe "Database" do
 
   it "should close connection on ConnectionLost" do
     DummyConnection.clear_connections
-    ::Db::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=1&retry_attempts=1" do |db|
+    ::Db.open "dummy://localhost:1027?initial_pool_size=1&max_pool_size=1&retry_attempts=1" do |db|
       db.exec("stmt1").or_panic
       assert connections.size == 1
       connection = connections.first

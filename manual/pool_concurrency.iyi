@@ -6,7 +6,7 @@ module manual/pool_concurrency
 
 import std/option_parser::{OptionParser}
 import std/time::{Time}
-import db/db
+import db
 import db/testing/dummy_driver::*
 
 options = ""
@@ -46,7 +46,7 @@ if !release
   puts "WARNING: This should be run in release mode."
 end
 
-db = ::Db::Db.open("dummy://host?#{options}").or_panic
+db = ::Db.open("dummy://host?#{options}").or_panic
 
 start_time = Time.monotonic
 

@@ -3,7 +3,7 @@ module db/mapping_test
 
 import std/base64::{Base64}
 import std/slice::{Bytes}
-import db/db
+import db
 import db/errors::*
 import db/core::*
 import db/serializable::{mapping}

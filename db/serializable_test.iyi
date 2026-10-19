@@ -4,7 +4,7 @@ module db/serializable_test
 import std/base64::{Base64}
 import std/slice::{Bytes}
 import std/json::{JSON, serializable}
-import db/db
+import db
 import db/errors::*
 import db/core::*
 import db/serializable::{db_serializable, db_serializable_non_strict, DBField}

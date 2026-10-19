@@ -1,7 +1,7 @@
 # crystal-db's spec/transaction_spec.cr.
 module db/transaction_test
 
-import db/db
+import db
 import db/errors::*
 import db/core::*
 import db/spec::{describe, it, expect_error}

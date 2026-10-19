@@ -2,7 +2,7 @@
 module db/db_test
 
 import std/uri::{Params}
-import db/db
+import db
 import db/errors::*
 import db/core::*
 import db/query_params::{fetch_bool}
@@ -16,17 +16,17 @@ end
 describe "Db" do
   it "should get driver class by name" do
     # a metaclass's `==` is not the class's identity in iyi's prelude
-    assert ::Db::Db.driver_class("dummy").or_panic.to_s == DummyDriver.to_s
+    assert ::Db.driver_class("dummy").or_panic.to_s == DummyDriver.to_s
   end
 
   it "should create dummy connection" do
-    db = ::Db::Db.open("dummy://localhost:1027").or_panic
+    db = ::Db.open("dummy://localhost:1027").or_panic
     assert db.checkout.or_panic.is_a?(DummyConnection)
   end
 
   it "should create a connection and close it" do
     DummyConnection.clear_connections
-    ::Db::Db.open("dummy://localhost") do |db|
+    ::Db.open("dummy://localhost") do |db|
     end.or_panic
     assert connections.size == 1
     assert connections.first.closed?
@@ -34,7 +34,7 @@ describe "Db" do
 
   it "should create a connection and close it" do
     DummyConnection.clear_connections
-    ::Db::Db.connect("dummy://localhost") do |cnn|
+    ::Db.connect("dummy://localhost") do |cnn|
       assert cnn.is_a?(DummyConnection)
     end.or_panic
     assert connections.size == 1
@@ -43,7 +43,7 @@ describe "Db" do
 
   it "should create a connection and wait for explicit closing" do
     DummyConnection.clear_connections
-    cnn = ::Db::Db.connect("dummy://localhost").or_panic
+    cnn = ::Db.connect("dummy://localhost").or_panic
     assert cnn.is_a?(DummyConnection)
     assert connections.size == 1
     assert !connections.first.closed?
@@ -118,7 +118,7 @@ describe "Db" do
   end
 
   it "gives nice error message when no driver is registered for schema (#21)" do
-    expect_error(::Db::Db.open("foobar://baz"), ArgumentError, %(no driver was registered for the schema "foobar", did you maybe forget to require the database driver?))
+    expect_error(::Db.open("foobar://baz"), ArgumentError, %(no driver was registered for the schema "foobar", did you maybe forget to require the database driver?))
   end
 
   it "should parse boolean query string params" do

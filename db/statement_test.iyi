@@ -2,7 +2,7 @@
 module db/statement_test
 
 import std/log::{Log, MemoryBackend, Severity}
-import db/db
+import db
 import db/errors::*
 import db/core::*
 import db/spec::{describe, it, expect_error}

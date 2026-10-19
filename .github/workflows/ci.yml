@@ -48,5 +48,5 @@ jobs:
           done
 
       - name: Check formatting
-        run: iyi fmt --check db manual
+        run: iyi fmt --check db.iyi db manual
         if: matrix.os == 'ubuntu-24.04'

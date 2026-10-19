@@ -29,7 +29,8 @@ which writes this line to `iyi.mod`:
 require github.com/iyilang/db v0.1.1 as db
 ```
 
-Files then import its modules as `db/db/...`: the short name, then the
+Files then `import db` for the root module, `Db.open` and the driver
+registry, and its other modules as `db/db/...`: the short name, then the
 module's path in the package.
 
 ## Usage
@@ -37,14 +38,14 @@ module's path in the package.
 ```iyi
 module app
 
-import db/db/db
+import db
 import db/db/core::*
 import db/db/errors::{DBError}
 import db/db/value::{DBValue}
 import sqlite3/sqlite3 # a driver: importing it registers "sqlite3"
 
 def contacts : Nil | DBError
-  Db::Db.open("sqlite3:./file.db") do |db|
+  Db.open("sqlite3:./file.db") do |db|
     db.exec("create table contacts (name text, age integer)")!
     db.exec("insert into contacts values (?, ?)", "John Doe", 30)!
 
@@ -122,7 +123,7 @@ wraps every query a driver runs.
 
 | module | what it holds |
 |---|---|
-| `db/db` | `Db::Db.open`, `.connect`, `.register_driver`, `.driver_class`, `VERSION` |
+| `db` | `Db.open`, `.connect`, `.register_driver`, `.driver_class`, `VERSION` |
 | `db/core` | `Driver`, `ConnectionBuilder`, `Database`, `Connection`, `Statement`, `ResultSet`, transactions, `PoolStatement`s, the `QueryMethods`/`SessionMethods`/`StatementMethods`/`BeginTransaction`/`Disposable`/`ConnectionContext` traits, `LOG` |
 | `db/errors` | `DBError` and its subclasses |
 | `db/value` | `DBValue`, `CustomValue`, `Any`, `ExecResult` |
@@ -138,7 +139,7 @@ crystal-db's.
 
 | crystal-db | iyi-db | why |
 |---|---|---|
-| `DB.open(uri)` raises | `Db::Db.open(uri) : Database \| DBError` - every fallible call answers its error, `!` hands it on | III.1: errors are values |
+| `DB.open(uri)` raises | `Db.open(uri) : Database \| DBError` - every fallible call answers its error, `!` hands it on | III.1: errors are values |
 | `DB::Error`, `DB::MappingException`, ... | `DBError`, `MappingError`, ... - the same hierarchy as classes implementing `Error`; `ArgumentError` is a `DBError` too | III.1 |
 | `rescue`/`ensure` around `close` | `close : Nil \| DBError`, and `defer` | III.1.4 |
 | `raise DB::Rollback.new` in a `transaction` block | the block answers `Rollback.new` (the transaction answers `nil`); answering any other error rolls back and answers it | no exceptions |
@@ -159,7 +160,7 @@ crystal-db's.
 
 Subclass `Driver` (answer a `ConnectionBuilder` from `connection_builder(uri)`),
 `ConnectionBuilder`, `Connection`, `Statement` and `ResultSet` from
-`db/core`, and call `Db::Db.register_driver("name", MyDriver)` at the
+`db/core`, and call `Db.register_driver("name", MyDriver)` at the
 top level of the driver's module, so importing the driver registers it. The
 abstract methods say what to implement; the comments on `Driver`,
 `Connection`, `Statement` and `ResultSet` say how. A lost connection answers
