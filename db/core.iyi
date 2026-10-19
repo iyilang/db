@@ -833,28 +833,17 @@ pub abstract class ResultSet
   # columns of the current row. Anything else is the value itself, which must
   # be a *type*: `ColumnTypeMismatchError` when it is not.
   def read(klass : T.class) : T | DBError forall T
-    # No `!` in this body: a generic body with macros in it is shipped in an
-    # artifact as text, and read back without iyi's `!` (iyi 0.17.0).
     {% if T < ::Tuple %}
-      {% for member, index in T.type_vars %}
-        __iyi_db_column_{{ index }} = read({{ member }})
-        return __iyi_db_column_{{ index }} if __iyi_db_column_{{ index }}.is_a?(DBError)
-      {% end %}
-      { {% for member, index in T.type_vars %} __iyi_db_column_{{ index }}, {% end %} }
+      { {% for member in T.type_vars %} read({{ member }})!, {% end %} }
     {% elsif T < ::NamedTuple %}
-      {% for name, index in T.keys %}
-        __iyi_db_column_{{ index }} = read({{ T[name] }})
-        return __iyi_db_column_{{ index }} if __iyi_db_column_{{ index }}.is_a?(DBError)
-      {% end %}
-      { {% for name, index in T.keys %} {{ name }}: __iyi_db_column_{{ index }}, {% end %} }
+      { {% for name in T.keys %} {{ name }}: read({{ T[name] }})!, {% end %} }
     {% elsif T < ::Enum %}
       read_enum(klass)
     {% elsif T.class.has_method?(:from_db_row) %}
       T.from_db_row(self)
     {% else %}
       col_index = next_column_index
-      value = read
-      return value if value.is_a?(DBError)
+      value = read!
       if value.is_a?(T)
         # `is_a?` narrows a single type and not a union such as `Int32?`, so
         # the value is cast; and a `.as(String?)` of a `DBValue` reads the
