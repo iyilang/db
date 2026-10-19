@@ -1,4 +1,4 @@
-## Unreleased
+## v0.3.0
 
 * `Database#close` and `Pool#close` close every resource. They closed every
   other one, as crystal-db's do, and left the rest open.
