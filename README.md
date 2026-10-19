@@ -159,6 +159,7 @@ crystal-db's.
 | `Pool#close` closes every other resource, as closing one takes it out of the list being walked | it closes every one | a crystal-db bug, fixed |
 | a checkout waiting on a full pool is woken only when a resource goes idle, and each wake-up waits `checkout_timeout` again | it is woken when a resource leaves the pool too, and waits `checkout_timeout` in all | a crystal-db bug, fixed |
 | a closed pool builds a new resource for the next checkout | a checkout of a closed pool, a waiting one too, answers "the pool is closed" | a crystal-db bug, fixed |
+| the statement cache hands back a statement its user closed | it builds a new one | a crystal-db bug, fixed |
 
 ## Writing a driver
 

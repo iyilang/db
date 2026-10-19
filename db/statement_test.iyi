@@ -295,6 +295,16 @@ describe "Statement" do
     end
   end
 
+  it "connection should build a cached statement again once it is closed" do
+    with_dummy_connection do |cnn|
+      stmt = cnn.prepared("the query").or_panic
+      stmt.close.or_panic
+      again = cnn.prepared("the query").or_panic
+      assert again.object_id != stmt.object_id
+      assert !again.closed?
+    end
+  end
+
   describe "logging" do
     it "exec with no arguments" do
       entries = capture_log do

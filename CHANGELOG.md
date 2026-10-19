@@ -13,6 +13,8 @@
 * `Database#setup_connection` takes each idle connection out of the pool
   while it sets it up, so a statement the setup runs does not release it,
   and closes the ones the setup fails on.
+* The statement cache builds a new statement in place of one its user
+  closed.
 
 ## v0.2.0
 

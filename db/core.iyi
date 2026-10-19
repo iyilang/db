@@ -113,6 +113,10 @@ pub class StringKeyCache(T)
     @cache.each { |_, value| yield value }
   end
 
+  def delete(key : String) : Nil
+    @cache.delete(key)
+  end
+
   def clear : Nil
     @cache = {} of String => T
   end
@@ -483,6 +487,10 @@ pub abstract class Connection
 
   def fetch_or_build_prepared_statement(query : String) : Statement | DBError
     if @options.prepared_statements_cache
+      cached = @statements_cache.fetch(query) { build_prepared_statement(query) }!
+      return cached unless cached.closed?
+      # closed by its user: a new one takes its place
+      @statements_cache.delete(query)
       @statements_cache.fetch(query) { build_prepared_statement(query) }
     else
       build_prepared_statement(query)
