@@ -51,10 +51,6 @@ end
 # *arg* as a `DBValue`: an array element by element, so `[1, nil]` binds as
 # one array argument. A type that is not a database value is refused at
 # compile time, by the cast.
-#
-# One generic function rather than an overload per kind: a call compiles a
-# non-generic method for the argument's own type, which this module's
-# artifact does not carry (iyi 0.17.0).
 pub def to_db_value(arg : T) : DBValue forall T
   case arg
   when Array
