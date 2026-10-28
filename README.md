@@ -13,7 +13,9 @@ require: errors are values, types are closed, and tasks are structured.
 
 ## Requirements
 
-iyi 0.18.0 or later.
+iyi 0.19.1 or later: a `Database` shared by tasks on every worker needs
+`spawn_parallel` (0.19.0), and the `@[Share]` defs and `SharedProc` that
+check the blocks it keeps (0.19.1).
 
 ## Installation
 
@@ -89,6 +91,37 @@ The pool is configured from the URI's query string: `initial_pool_size`
 seconds). `prepared_statements` (true) and `prepared_statements_cache` (true)
 choose how statements run.
 
+### On every worker
+
+A `Database` is `Share`, so one opened once and kept in a constant serves
+parallel tasks (`spawn_parallel`) on every worker, a web server's handlers
+among them, with no `Share` error and no warning from the compiler:
+
+```iyi
+DATABASE = Db.open(ENV["DATABASE_URL"]).or_panic
+
+def ask(n : Int64) : Int64
+  DATABASE.query_one("SELECT $1::int8", n, as: Int64).or_panic
+end
+
+group do |g|
+  32.times { |t| g.spawn_parallel { ask(t.to_i64); nil } }
+end
+```
+
+The pool hands each connection to one task at a time, decides which one
+under a `Mutex`, and parks a checkout that finds none free - the task, not
+its worker - until a release hands it one. The blocks a database keeps run
+on whichever worker opens a connection or runs a statement, several at
+once, so the compiler checks each where it is written as it checks a
+parallel task's: the factory given to `Pool.new`, `Database.new` and
+`Database.open`, `setup_connection`'s block and
+`Statement.def_around_query_or_exec`'s hooks may capture only `Share`
+values. Count in an `Atomic`, keep things behind a `Mutex`.
+
+`close` closes the idle connections at once, and each one a task holds
+when the task releases it.
+
 ### Reading rows into objects
 
 ```iyi
@@ -115,8 +148,14 @@ property for. `Employee.from_db_row(rs)` reads the current row and
 ### Logging and instrumentation
 
 Every statement logs `Executing query` at debug level to the std/log logger
-`"db"` (`Db::Core::LOG`), with the query and its arguments as the entry's
-data: `Executing query -- query="select name from contacts where age > ?" args=[18]`.
+`"db"`, with the query and its arguments as the entry's data:
+`Executing query -- query="select name from contacts where age > ?" args=[18]`.
+`Db::Core::LOG` is that logger behind a lock, with its level in an atomic
+beside it, so a statement with debug off takes no lock. Its level is read
+off std's logger when the first statement asks, and set after that with
+`Db::Core::LOG.level = Severity::Debug`; a level given to std's loggers
+directly once it has been read is not seen. A backend is set on std's
+`Log.for("db")`.
 `Statement.def_around_query_or_exec { |stmt, args, run| ...; run.call; ... }`
 wraps every query a driver runs.
 
@@ -125,7 +164,7 @@ wraps every query a driver runs.
 | module | what it holds |
 |---|---|
 | `db` | `Db.open`, `.connect`, `.register_driver`, `.driver_class`, `VERSION` |
-| `db/core` | `Driver`, `ConnectionBuilder`, `Database`, `Connection`, `Statement`, `ResultSet`, transactions, `PoolStatement`s, the `QueryMethods`/`SessionMethods`/`StatementMethods`/`BeginTransaction`/`Disposable`/`ConnectionContext` traits, `LOG` |
+| `db/core` | `Driver`, `ConnectionBuilder`, `Database`, `Connection`, `Statement`, `ResultSet`, transactions, `PoolStatement`s, the `QueryMethods`/`SessionMethods`/`StatementMethods`/`BeginTransaction`/`Disposable`/`ConnectionContext` traits, `LOG` and its `SharedLogger` |
 | `db/errors` | `DBError` and its subclasses |
 | `db/value` | `DBValue`, `CustomValue`, `Any`, `ExecResult` |
 | `db/pooling` | `Pool(T)`, usable for any resource with a `close` |
@@ -152,12 +191,13 @@ crystal-db's.
 | `DB::MetadataValueConverter.arg_to_log` overloads | `CustomValue#to_log` | R-3 |
 | `Pool.new` and `Database.new` open the initial connections | `Pool#prefill` and `Database.open(...)` do; the constructors do no IO (a constructor has no error to answer) | III.1 |
 | `TopLevelTransaction.new` runs `BEGIN` | `Transaction#start` runs `BEGIN`/`SAVEPOINT`; `perform_commit`/`perform_rollback` are what a transaction subclass implements | III.1 |
-| `Pool` guards itself with a `Mutex` | no lock: tasks share their group's thread and interleave only where one parks | III.4.5 |
+| `Pool` guards itself with a `Mutex` | so does iyi-db's, around its bookkeeping, since tasks run on every worker (`spawn_parallel`); a connection goes in and out of the lock in a slot that is `Share` on trust, as no connection is `Share` | III.4.4, III.4.13 |
+| a pool's factory, `setup_connection`'s block and `def_around_query_or_exec`'s hooks may capture anything | they run on whichever worker needs them, so they may capture only `Share` values, checked where they are written (`@[Share]`) | III.4.4: data races are a compile error |
 | `disconnect!`-style names | no `!` in names | III.1.7 |
 | `DB::DriverSpecs.run do ... end` (implicit receiver) | `DriverSpecs.run do \|specs\| specs.... end` | no `with ... yield` |
 | `Connection::Options.from_http_params` read the statement cache default from `prepared_statements` | it reads `prepared_statements_cache` | a crystal-db bug, fixed |
-| `Pool#close` closes every other resource, as closing one takes it out of the list being walked | it closes every one | a crystal-db bug, fixed |
-| a checkout waiting on a full pool is woken only when a resource goes idle, and each wake-up waits `checkout_timeout` again | it is woken when a resource leaves the pool too, and waits `checkout_timeout` in all | a crystal-db bug, fixed |
+| `Pool#close` closes every other resource, as closing one takes it out of the list being walked; and the ones out, under the tasks using them | it closes every idle one, and each one out when it is released | a crystal-db bug, fixed; a task's connection is not closed under it |
+| a checkout waiting on a full pool is woken only when a resource goes idle, and each wake-up waits `checkout_timeout` again | a release hands its resource, or the room it left, to the checkout that has waited longest, and a wait lasts `checkout_timeout` in all | a crystal-db bug, fixed |
 | a closed pool builds a new resource for the next checkout | a checkout of a closed pool, a waiting one too, answers "the pool is closed" | a crystal-db bug, fixed |
 | the statement cache hands back a statement its user closed | it builds a new one | a crystal-db bug, fixed |
 
@@ -171,6 +211,11 @@ abstract methods say what to implement; the comments on `Driver`,
 `Connection`, `Statement` and `ResultSet` say how. A lost connection answers
 `ConnectionLost.new(connection)`, so the pool retries on another one. Values
 of the driver's own types are classes inheriting `CustomValue`.
+
+A `Database` that `Db.open` makes calls the driver's `ConnectionBuilder#build`
+from whichever worker opens a connection, several at once, and takes that on
+trust: a builder holds what the URI said, made once, and `build` only reads
+it.
 
 Test a driver with the shared specs:
 
@@ -194,11 +239,12 @@ iyi test db     # every *_test.iyi
 ```
 
 The tests are crystal-db's specs, ported; `db/testing/dummy_driver.iyi` is
-its dummy driver. Every test also builds from artifacts
-(`iyi build --emit-iyimod DIR` then `--use-iyimod DIR`). `manual/` holds the
-two programs crystal-db runs by hand:
-`iyi run manual/pool_concurrency.iyi -- --duration=3` and
-`iyi run manual/load.iyi`.
+its dummy driver, safe to use from every worker. `db/parallel_test.iyi` runs
+db#1's program and the pool's other cases on twelve workers. Every test also
+builds from artifacts (`iyi build --emit-iyimod DIR` then `--use-iyimod
+DIR`). `manual/` holds the two programs crystal-db runs by hand:
+`iyi run manual/pool_concurrency.iyi -- --duration=3`, whose tasks run on
+every worker, and `iyi run manual/load.iyi`.
 
 `iyi check` a program, not a module that only queries: a block passed to
 `Database#query` is typed through the driver's `Statement`, and a module
