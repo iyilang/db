@@ -2,6 +2,9 @@
 #
 # % iyi run manual/pool_concurrency.iyi -- --options="max_pool_size=5" --duration=30 --concurrency=4
 #
+# The tasks are parallel (`spawn_parallel`), as crystal's fibers were under
+# `-Dpreview_mt`: they share one `Database` from every worker, as many
+# workers as `IYI_WORKERS` says, or one per core.
 module manual/pool_concurrency
 
 import std/option_parser::{OptionParser}
@@ -38,8 +41,7 @@ parser.invalid_option do |flag|
 end
 parser.parse
 
-# iyi tasks share one thread (no preview_mt counterpart).
-multi_threaded = false
+multi_threaded = IyiWorkers.count
 release = {% if flag?(:release) %} true {% else %} false {% end %}
 
 if !release
@@ -53,21 +55,22 @@ start_time = Time.monotonic
 puts "Starting test for #{duration} seconds..."
 
 # crystal's free fibers died with the program; iyi's group waits for its
-# tasks, so they loop until the duration is over.
-running = true
+# tasks, so they loop until the duration is over. The flag is an atomic,
+# since a parallel task may capture only a `Share` value.
+running = Atomic(Int32).new(1)
 group do |g|
   concurrency.times do
-    g.spawn do
-      while running
+    g.spawn_parallel do
+      while running.get == 1
         db.scalar "1"
         sleep 0
       end
-      0
+      nil
     end
   end
 
   sleep duration * 1000
-  running = false
+  running.set(0)
 end
 
 end_time = Time.monotonic
@@ -75,7 +78,7 @@ end_time = Time.monotonic
 puts "          Options : #{options}"
 puts "   Duration (sec) : #{duration} (actual #{end_time - start_time})"
 puts "      Concurrency : #{concurrency}"
-puts "   Multi Threaded : #{multi_threaded ? "Yes (#{multi_threaded})" : "No"}"
+puts "   Multi Threaded : Yes (#{multi_threaded} workers)"
 puts "Total Connections : #{DummyConnection.connections_count}"
 puts " Total Statements : #{DummyStatement.statements_count}"
 puts "    Total Queries : #{DummyStatement.statements_exec_count}"
