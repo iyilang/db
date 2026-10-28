@@ -1,3 +1,49 @@
+## Unreleased
+
+Requires iyi 0.19.1: a `Database` shared by tasks on every worker needs
+`spawn_parallel` (0.19.0), and the `@[Share]` defs and `SharedProc` that check
+the blocks it keeps (0.19.1).
+
+* A `Database` and its `Pool` are `Share`, so one kept in a constant may be
+  used by parallel tasks on every worker, with no `Share` error and no
+  warning from the compiler (db#1). v0.3.0's pool kept its bookkeeping with
+  no lock, and two tasks on different workers were handed one connection:
+  one read the other's rows, or the runtime panicked with "two fibers
+  reading one fd". The bookkeeping is behind a `Mutex` now, and a
+  connection goes in and out of it in a slot that is `Share` on trust.
+* A checkout that finds the pool full parks, and its worker runs other
+  tasks. A release hands its resource, or the room it left, to the checkout
+  that has waited longest, which a later checkout no longer takes first.
+* `Pool#close` and `Database#close` close the idle resources, and each one a
+  task holds when the task releases it, where they closed it under the task.
+* **Breaking:** the blocks a pool or database keeps run on whichever worker
+  needs them, several at once, so the compiler checks each where it is
+  written, as it checks a parallel task's: `Pool.new`'s, `Database.new`'s
+  and `Database.open`'s factory, and `setup_connection`'s block, may capture
+  only `Share` values. A block that counts in a captured local, or keeps
+  what it made in a captured array, is refused: count in an `Atomic`, keep
+  it behind a `Mutex`.
+* `Db.open` calls the driver's `ConnectionBuilder#build` from any worker, on
+  trust: a builder holds what the URI said and only reads it.
+* `Pool#stats` reads atomics, and takes no lock.
+* A pool knows a resource given back by its `object_id`: a resource is a
+  class's instance.
+* The driver registry is behind a lock, so `Db.open` may run on any worker.
+* **Breaking:** `Statement.def_around_query_or_exec`'s hooks run on every
+  worker, so a hook may capture only `Share` values. A statement learns
+  there are none, the common case, from an atomic count, without a lock.
+* **Breaking:** `Db::Core::LOG` is a `SharedLogger`: std's logger for "db",
+  which is not `Share`, behind a lock, with its level in an atomic beside
+  it, so a statement with debug off takes no lock. Its level is read off
+  std's logger when the first statement asks; set it after that with
+  `Db::Core::LOG.level =`. A backend is set on std's `Log.for("db")`.
+* The dummy driver (`db/testing/dummy_driver`) may be used from every
+  worker: its counts are atomics, and what it keeps for the tests is behind
+  a lock.
+* `db/parallel_test.iyi` runs db#1's program, twenty times, and the pool's
+  other cases on twelve workers; `manual/pool_concurrency.iyi` runs its
+  tasks with `spawn_parallel`.
+
 ## v0.3.0
 
 * `Database#close` and `Pool#close` close every resource. They closed every
