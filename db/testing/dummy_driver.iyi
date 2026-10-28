@@ -8,15 +8,33 @@
 # prepared, `"raise ConnectionLost"` loses the connection, an exec of
 # `"raise"` or of a connection's `failing_command` fails, and the result
 # set of `"fail_close"` answers an error when it is closed.
+#
+# Its connections, statements and result sets may be made and used on any
+# worker (`spawn_parallel`): what it counts is atomic, and what it keeps for
+# the tests to look at is behind a lock.
 module db/testing/dummy_driver
 
 import std/uri::{URI, Params}
 import std/text
 import std/slice::{Slice, Bytes}
+import std/mutex::{Mutex}
+import std/list::{List}
 import db
 import db/errors::*
 import db/value::*
 import db/core::*
+
+# A connection or a result set as the double keeps it for the tests to
+# look at. `Share` on trust, for this test double alone: a test looks at
+# one in the task that used it, or after the tasks that used it have
+# ended.
+@[Share(owns: true)]
+pub class Made(T)
+  getter value : T
+
+  def initialize(@value : T)
+  end
+end
 
 pub class DummyDriver < Driver
   def connection_builder(uri : URI) : ConnectionBuilder | DBError
@@ -35,8 +53,8 @@ pub class DummyConnectionBuilder < ConnectionBuilder
 end
 
 pub class DummyConnection < Connection
-  @@connections = [] of DummyConnection
-  @@connections_count = 0
+  @@made : Mutex(Array(Made(DummyConnection))) = Mutex.new { [] of Made(DummyConnection) }
+  @@connections_count : Atomic(Int32) = Atomic(Int32).new(0)
 
   @connected = true
 
@@ -47,20 +65,27 @@ pub class DummyConnection < Connection
   def initialize(options : Connection::Options)
     super(options)
     sleep 0
-    @@connections_count += 1
-    @@connections << self
+    @@connections_count.add(1)
+    made = Made.new(self)
+    while @@made.lock { |connections| connections << made }.is_a?(Cancelled)
+    end
   end
 
   def self.connections_count : Int32
-    @@connections_count
+    @@connections_count.get
   end
 
+  # The connections made since `clear_connections`, oldest first.
   def self.connections : Array(DummyConnection)
-    @@connections
+    while true
+      made = @@made.get { |connections| List(Made(DummyConnection)).new(connections) }
+      return made.map(&.value) unless made.is_a?(Cancelled)
+    end
   end
 
   def self.clear_connections : Nil
-    @@connections = [] of DummyConnection
+    while @@made.update { |_| [] of Made(DummyConnection) }.is_a?(Cancelled)
+    end
   end
 
   def build_prepared_statement(query : String) : Statement | DBError
@@ -159,28 +184,28 @@ pub class DummySavePointTransaction < SavePointTransaction
 end
 
 pub class DummyStatement < Statement
-  @@statements_count = 0
-  @@statements_exec_count = 0
+  @@statements_count : Atomic(Int32) = Atomic(Int32).new(0)
+  @@statements_exec_count : Atomic(Int32) = Atomic(Int32).new(0)
 
   getter params : Hash(Int32, DBValue)
 
   def initialize(connection : Connection, command : String, @prepared : Bool)
     @params = {} of Int32 => DBValue
     super(connection, command)
-    @@statements_count += 1
+    @@statements_count.add(1)
   end
 
   def self.statements_count : Int32
-    @@statements_count
+    @@statements_count.get
   end
 
   def self.statements_exec_count : Int32
-    @@statements_exec_count
+    @@statements_exec_count.get
   end
 
   protected def perform_query(args : Array(DBValue)) : ResultSet | DBError
     assert_not_closed
-    @@statements_exec_count += 1
+    @@statements_exec_count.add(1)
     sleep 0
     @connection.as(DummyConnection).check!
     set_params args
@@ -189,7 +214,7 @@ pub class DummyStatement < Statement
 
   protected def perform_exec(args : Array(DBValue)) : ExecResult | DBError
     assert_not_closed
-    @@statements_exec_count += 1
+    @@statements_exec_count.add(1)
     @connection.as(DummyConnection).check!
     set_params args
     if command == "raise" || command == @connection.as(DummyConnection).failing_command
@@ -215,7 +240,7 @@ pub class DummyStatement < Statement
 end
 
 pub class DummyResultSet < ResultSet
-  @@last_result_set : DummyResultSet? = nil
+  @@last_result_set : Mutex(Made(DummyResultSet)?) = Mutex.new { nil.as(Made(DummyResultSet)?) }
 
   @top_values : Array(Array(String))
   @values : Array(String)?
@@ -227,11 +252,18 @@ pub class DummyResultSet < ResultSet
     @top_values = command.split.map { |row| row.split(',') }
     @column_count = @top_values.size > 0 ? @top_values[0].size : 2
     @values = nil
-    @@last_result_set = self
+    made = Made.new(self).as(Made(DummyResultSet)?)
+    while @@last_result_set.update { |_| made }.is_a?(Cancelled)
+    end
   end
 
   def self.last_result_set : DummyResultSet
-    @@last_result_set || raise "no result set yet"
+    while true
+      made = @@last_result_set.get { |last| last }
+      next if made.is_a?(Cancelled)
+      return made.value if made
+      raise "no result set yet"
+    end
   end
 
   protected def do_close : Nil | DBError
