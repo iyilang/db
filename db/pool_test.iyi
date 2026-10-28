@@ -1,7 +1,14 @@
 # crystal-db's spec/pool_spec.cr.
+#
+# A factory runs on whichever worker builds a resource now, so it may
+# capture only `Share` values: where crystal's examples counted builds in a
+# captured integer or kept the resources in a captured array, these count
+# in an `Atomic` and keep them in a `Built`.
 module db/pool_test
 
 import std/time::{Time, Span}
+import std/mutex::{Mutex}
+import std/list::{List}
 import db/errors::*
 import db/core::{Disposable}
 import db/pooling::{Pool}
@@ -76,8 +83,29 @@ end
 impl Disposable for Closable
 end
 
+# The resources a factory built, oldest first.
+class Built
+  @made : Mutex(Array(Made(Closable)))
+
+  def initialize
+    @made = Mutex.new { [] of Made(Closable) }
+  end
+
+  def make : Closable
+    resource = Closable.new
+    made = Made.new(resource)
+    @made.lock { |all| all << made }.or_panic
+    resource
+  end
+
+  def all : Array(Closable)
+    @made.get { |all| List(Made(Closable)).new(all) }.or_panic.map(&.value)
+  end
+end
+
 # Crystal's `Pool.new` opened the `initial_pool_size` resources itself; iyi's
 # `prefill` does it.
+@[Share]
 def create_pool(options : Pool::Options = Pool::Options.new, &factory : -> Closable) : Pool(Closable)
   pool = Pool(Closable).new(options) { factory.call }
   pool.prefill.or_panic
@@ -86,9 +114,9 @@ end
 
 describe "Db::Pool" do
   it "should use proc to create objects" do
-    block_called = 0
-    pool = create_pool(Pool::Options.new(initial_pool_size: 3)) { block_called += 1; Closable.new }
-    assert block_called == 3
+    block_called = Atomic(Int32).new(0)
+    pool = create_pool(Pool::Options.new(initial_pool_size: 3)) { block_called.add(1); Closable.new }
+    assert block_called.get == 3
   end
 
   it "should get resource" do
@@ -99,10 +127,10 @@ describe "Db::Pool" do
   end
 
   it "should be available if not checkedout" do
-    resource : Closable? = nil
-    pool = create_pool(Pool::Options.new(initial_pool_size: 1)) { c = Closable.new; resource = c; c }
-    r = resource
-    assert !r.nil? && pool.is_available?(r)
+    built = Built.new
+    pool = create_pool(Pool::Options.new(initial_pool_size: 1)) { built.make }
+    r = built.all[0]
+    assert pool.is_available?(r)
   end
 
   it "should not be available if checkedout" do
@@ -152,40 +180,46 @@ describe "Db::Pool" do
   end
 
   it "should create new if max was not reached" do
-    block_called = 0
-    pool = create_pool(Pool::Options.new(max_pool_size: 2, initial_pool_size: 1)) { block_called += 1; Closable.new }
-    assert block_called == 1
+    block_called = Atomic(Int32).new(0)
+    pool = create_pool(Pool::Options.new(max_pool_size: 2, initial_pool_size: 1)) { block_called.add(1); Closable.new }
+    assert block_called.get == 1
     pool.checkout.or_panic
-    assert block_called == 1
+    assert block_called.get == 1
     pool.checkout.or_panic
-    assert block_called == 2
+    assert block_called.get == 2
   end
 
   it "should reuse returned resources" do
-    all = [] of Closable
-    pool = create_pool(Pool::Options.new(max_pool_size: 2, initial_pool_size: 1)) { c = Closable.new; all << c; c }
+    built = Built.new
+    pool = create_pool(Pool::Options.new(max_pool_size: 2, initial_pool_size: 1)) { built.make }
     pool.checkout.or_panic
     b1 = pool.checkout.or_panic
     pool.release b1
     b2 = pool.checkout.or_panic
 
     assert b1 == b2
-    assert all.size == 2
+    assert built.all.size == 2
   end
 
-  it "should close available and total" do
-    all = [] of Closable
-    pool = create_pool(Pool::Options.new(max_pool_size: 2, initial_pool_size: 1)) { c = Closable.new; all << c; c }
+  # crystal's `close` closed the resources out too, under the task using
+  # them; a resource out is closed when it is released.
+  it "should close available, and one out when it is released" do
+    built = Built.new
+    pool = create_pool(Pool::Options.new(max_pool_size: 2, initial_pool_size: 1)) { built.make }
     a = pool.checkout.or_panic
     b = pool.checkout.or_panic
     pool.release b
+    all = built.all
     assert all.size == 2
 
     assert !all[0].closed?
     assert !all[1].closed?
     pool.close
-    assert all[0].closed?
-    assert all[1].closed?
+    assert !a.closed?
+    assert b.closed?
+    pool.release a
+    assert a.closed?
+    assert pool.stats.open_connections == 0
   end
 
   it "should timeout" do
@@ -202,12 +236,13 @@ describe "Db::Pool" do
   end
 
   it "should close if max idle amount is reached" do
-    all = [] of Closable
-    pool = create_pool(Pool::Options.new(max_pool_size: 3, max_idle_pool_size: 1)) { c = Closable.new; all << c; c }
+    built = Built.new
+    pool = create_pool(Pool::Options.new(max_pool_size: 3, max_idle_pool_size: 1)) { built.make }
     pool.checkout.or_panic
     pool.checkout.or_panic
     pool.checkout.or_panic
 
+    all = built.all
     assert all.size == 3
     assert !all.any?(&.closed?)
     pool.release all[0]
@@ -238,17 +273,18 @@ describe "Db::Pool" do
   end
 
   it "should create resource after max_pool was reached if idle forced some close up" do
-    all = [] of Closable
-    pool = create_pool(Pool::Options.new(max_pool_size: 3, max_idle_pool_size: 1)) { c = Closable.new; all << c; c }
+    built = Built.new
+    pool = create_pool(Pool::Options.new(max_pool_size: 3, max_idle_pool_size: 1)) { built.make }
     pool.checkout.or_panic
     pool.checkout.or_panic
     pool.checkout.or_panic
+    all = built.all
     pool.release all[0]
     pool.release all[1]
     pool.checkout.or_panic
     pool.checkout.or_panic
 
-    assert all.size == 4
+    assert built.all.size == 4
   end
 
   it "counts no resource in flight after the factory panicked" do
@@ -272,24 +308,35 @@ describe "Db::Pool" do
     end
   end
 
-  it "waits checkout_timeout in all, however often it is woken" do
-    pool = create_pool(Pool::Options.new(max_pool_size: 1, checkout_timeout: 0.3)) { Closable.new }
+  # A release hands its resource to the checkout that has waited longest,
+  # and a checkout made after the release does not take it first: crystal's
+  # pool put it back idle and woke the waiter, which found it gone.
+  it "hands a released resource to the waiting checkout" do
+    pool = create_pool(Pool::Options.new(max_pool_size: 1, checkout_timeout: 1.0)) { Closable.new }
     a = pool.checkout.or_panic
-    waited = [] of Span
     group do |g|
       g.spawn do
-        started = Time.monotonic
-        expect_error(pool.checkout, PoolTimeout)
-        waited << Time.monotonic - started
+        got = pool.checkout.or_panic
+        assert got == a
+        sleep 50
+        pool.release got
         0
       end
-      sleep 200
-      # the release wakes the waiter, and the resource is taken again before
-      # the waiter runs
+      sleep 100
       pool.release a
-      pool.checkout.or_panic
+      # the waiter has it: this checkout waits until the waiter releases it
+      assert pool.checkout.or_panic == a
     end
-    assert waited[0] < Span.milliseconds(450)
+  end
+
+  it "waits checkout_timeout in all" do
+    pool = create_pool(Pool::Options.new(max_pool_size: 1, checkout_timeout: 0.3)) { Closable.new }
+    pool.checkout.or_panic
+    started = Time.monotonic
+    expect_error(pool.checkout, PoolTimeout)
+    waited = Time.monotonic - started
+    assert waited >= Span.milliseconds(290)
+    assert waited < Span.milliseconds(600)
   end
 
   it "takes a checkout_timeout too long for a timer as waiting" do
@@ -323,10 +370,10 @@ describe "Db::Pool" do
   end
 
   it "builds nothing once it is closed" do
-    built = 0
-    pool = create_pool { built += 1; Closable.new }
+    built = Atomic(Int32).new(0)
+    pool = create_pool { built.add(1); Closable.new }
     pool.close
     expect_error(pool.checkout, DBError, "the pool is closed")
-    assert built == 1
+    assert built.get == 1
   end
 end

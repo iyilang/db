@@ -27,18 +27,99 @@
 module db/core
 
 import std/uri::{URI, Params}
-import std/log::{Log, Logger}
+import std/log::{Log, Logger, Severity}
 import std/random::{Random}
+import std/mutex::{Mutex}
+import std/shared_proc::{SharedProc}
+import std/list::{List}
 import std/text
 import db/errors::*
 import db/value::*
 import db/query_params::*
 import db/pooling::*
 
+# A std/log logger that any worker may write to. std's `Logger` is not
+# `Share` - its level and backend are written in place - so it is kept
+# behind a lock, and its level is held beside it in an atomic: a statement
+# asks the atomic whether it logs, and takes the lock only when it does.
+# With debug off, the common case, logging costs every worker one atomic
+# read and no lock.
+#
+# The level is read off std's logger the first time it is asked for - the
+# first statement, usually after the program has set up its logging - and
+# changes with `level=` after that. A level given to std's loggers
+# directly once it has been read (`Log.setup`, `Log.for("db").level =`) is
+# not seen here.
+pub class SharedLogger
+  @logger : Mutex(Logger)
+  # the level's `Severity#value`, or -1 until it is first read. Not named
+  # `@level`: a setter `level=` marks a field of that name as written,
+  # whatever the setter does (SPEC.md III.4.4).
+  @threshold : Atomic(Int32)
+
+  # The logger for *source*, as `Log.for(source)` answers it.
+  def initialize(source : String)
+    @threshold = Atomic(Int32).new(-1)
+    @logger = Mutex.new { Log.for(source) }
+  end
+
+  # The level below which entries are dropped, as `Logger#level`.
+  def level : Severity
+    Severity.from_value?(threshold) || Severity::Info
+  end
+
+  # Sets the level, as `Logger#level=`: nil hands it back to the parent
+  # logger's.
+  def level=(severity : Severity?) : Nil
+    while true
+      level = @logger.get { |logger| logger.level = severity; logger.level.value }
+      unless level.is_a?(Cancelled)
+        @threshold.set(level)
+        return
+      end
+    end
+  end
+
+  # Whether an entry at *severity* is written.
+  def enabled?(severity : Severity) : Bool
+    severity != Severity::None && severity.value >= threshold
+  end
+
+  def debug? : Bool
+    enabled?(Severity::Debug)
+  end
+
+  # Writes an entry, with the lock held, when the level lets it through.
+  def log(severity : Severity, message : String, **data) : Nil
+    return unless enabled?(severity)
+    @logger.lock { |logger| logger.log(severity, message, **data) }
+    nil
+  end
+
+  def debug(message : String, **data) : Nil
+    log(Severity::Debug, message, **data)
+  end
+
+  # The level's value, read off std's logger the first time.
+  private def threshold : Int32
+    known = @threshold.get
+    return known if known >= 0
+    while true
+      level = @logger.get { |logger| logger.level.value }
+      unless level.is_a?(Cancelled)
+        # a `level=` that got in first stands
+        @threshold.compare_and_set(-1, level)
+        return @threshold.get
+      end
+    end
+  end
+end
+
 # The logger every statement writes "Executing query" to, at debug level,
 # with the query and its arguments as the entry's `query` and `args` data.
-# crystal-db's `DB::Log`; its source is "db".
-pub LOG = Log.for("db")
+# crystal-db's `DB::Log`; its source is "db". Turn the entries on with
+# `Db::Core::LOG.level = Severity::Debug`.
+pub LOG = SharedLogger.new("db")
 
 # A resource with a `close` that runs once: connections, statements, result
 # sets and transactions. An implementer declares `@closed = false` and a
@@ -674,8 +755,13 @@ pub abstract class Statement
   #   puts "#{stmt.command} took #{Time.monotonic - started}"
   # end
   # ```
+  #
+  # A hook runs on whichever worker runs the statement, several at once,
+  # so it is checked where it is written as a parallel task's block is:
+  # what it captures must be `Share`.
+  @[Share]
   def self.def_around_query_or_exec(&hook : Statement, Array(DBValue), Proc(Nil) -> Nil) : Nil
-    AROUND_HOOKS.add(hook)
+    AROUND_HOOKS.add(AroundHook.of { |call| hook.call(call[0], call[1], call[2]) })
   end
 
   # Removes every hook added with `def_around_query_or_exec`.
@@ -755,10 +841,10 @@ pub abstract class Statement
     run.call
   end
 
-  private def wrap_hook(hook : Proc(Statement, Array(DBValue), Proc(Nil), Nil), args : Array(DBValue), inner : Proc(Nil)) : Proc(Nil)
+  private def wrap_hook(hook : AroundHook, args : Array(DBValue), inner : Proc(Nil)) : Proc(Nil)
     statement = self.as(Statement)
     -> do
-      hook.call(statement, args, inner)
+      hook.call({statement, args, inner})
       nil
     end
   end
@@ -775,27 +861,47 @@ end
 impl StatementMethods for Statement
 end
 
+# A hook `Statement.def_around_query_or_exec` adds, called with the
+# statement, its arguments and the proc that runs it.
+alias AroundHook = SharedProc(Tuple(Statement, Array(DBValue), Proc(Nil)), Nil)
+
 # The hooks `Statement.def_around_query_or_exec` adds: one list for every
 # statement class. Module state, not a class variable, which each subclass
 # would hold its own copy of - a driver's statements would never see the
-# hooks added on `Statement`.
+# hooks added on `Statement`. Every worker's statements read it, so it is
+# `Share`: the list is replaced whole behind a lock when a hook is added,
+# and a count beside it lets a statement find there are none, the common
+# case, without the lock.
 class AroundHooks
-  getter hooks : Array(Proc(Statement, Array(DBValue), Proc(Nil), Nil))
+  @hooks : Mutex(List(AroundHook))
+  @count : Atomic(Int32)
 
   def initialize
-    @hooks = [] of Proc(Statement, Array(DBValue), Proc(Nil), Nil)
+    @hooks = Mutex.new { List(AroundHook).new([] of AroundHook) }
+    @count = Atomic(Int32).new(0)
   end
 
-  def add(hook : Proc(Statement, Array(DBValue), Proc(Nil), Nil)) : Nil
-    @hooks << hook
+  def hooks : List(AroundHook)
+    while true
+      hooks = @hooks.get { |list| list }
+      return hooks unless hooks.is_a?(Cancelled)
+    end
+  end
+
+  def add(hook : AroundHook) : Nil
+    while @hooks.update { |list| list.appended(hook) }.is_a?(Cancelled)
+    end
+    @count.add(1)
   end
 
   def any? : Bool
-    !@hooks.empty?
+    @count.get > 0
   end
 
   def clear : Nil
-    @hooks = [] of Proc(Statement, Array(DBValue), Proc(Nil), Nil)
+    while @hooks.update { |_| List(AroundHook).new([] of AroundHook) }.is_a?(Cancelled)
+    end
+    @count.set(0)
   end
 end
 
@@ -1068,6 +1174,10 @@ end
 
 # A connection factory with a specific configuration. See
 # `Driver#connection_builder`.
+#
+# A `Database` that `Db.open` makes calls `build` from whichever worker
+# needs a new connection, several at once. A builder holds what the URI
+# said, made once by `connection_builder`, and `build` only reads it.
 pub abstract class ConnectionBuilder
   # Opens a connection; `ConnectionRefused` when it cannot be established.
   abstract def build : Connection | DBError
@@ -1161,28 +1271,49 @@ end
 # This can be changed from the `prepared_statements` URI parameter:
 #
 #   - `prepared_statements` (true, or false, default true)
+#
+# ## Every worker
+#
+# A `Database` is `Share`: one kept in a constant may be used from parallel
+# tasks (`spawn_parallel`) on every worker. Its pool hands each connection
+# to one task at a time (`Pool`), and the blocks it keeps - the connection
+# factory and `setup_connection`'s - run on whichever worker opens a
+# connection, so each is checked where it is written, as a parallel task's
+# block is.
 pub class Database
   getter pool : Pool(Connection)
 
   @connection_options : Connection::Options
-  @setup_connection : Proc(Connection, Nil | DBError)
+  # the block `setup_connection` gave, which every connection the pool
+  # opens runs, on whichever worker opens it; behind a lock, since a task
+  # may set it while another opens a connection
+  @setup : Mutex(SharedProc(Connection, Nil | DBError)?)
 
   # Initializes a database with the specified options and connection
   # factory, for what a URI cannot say, such as a tunnelled connection. No
   # connection is opened yet: `Database.open` opens the initial ones too.
-  def initialize(connection_options : Connection::Options, pool_options : Pool::Options, &factory : -> Connection | DBError)
-    @connection_options = connection_options
-    @setup_connection = ->(conn : Connection) { nil.as(Nil | DBError) }
+  #
+  # The *factory* runs on whichever worker needs a new connection, several
+  # at once, so what it captures must be `Share`.
+  @[Share]
+  def self.new(connection_options : Connection::Options, pool_options : Pool::Options, &factory : -> Connection | DBError) : Database
+    new(connection_options, pool_options, SharedProc(Nil, Connection | DBError).of { |_| factory.call })
+  end
+
+  # A database over a factory already checked: the one `new` with a block
+  # builds.
+  def initialize(@connection_options : Connection::Options, pool_options : Pool::Options, factory : SharedProc(Nil, Connection | DBError))
+    @setup = Mutex.new { nil.as(SharedProc(Connection, Nil | DBError)?) }
     @pool = uninitialized Pool(Connection) # in order to use self in the factory proc
     @pool = Pool(Connection).new(pool_options) do
-      conn = factory.call
+      conn = factory.call(nil)
       next conn if conn.is_a?(DBError)
       conn.auto_release = false
       conn.context = self
-      set_up = @setup_connection.call(conn)
-      if set_up.is_a?(DBError)
+      ready = set_up(conn)
+      if ready.is_a?(DBError)
         conn.close
-        next set_up
+        next ready
       end
       conn
     end
@@ -1191,6 +1322,7 @@ pub class Database
   # A database over the connections *factory* opens, with the initial ones
   # already open; the error that kept the first of them from opening
   # otherwise.
+  @[Share]
   def self.open(connection_options : Connection::Options, pool_options : Pool::Options, &factory : -> Connection | DBError) : Database | DBError
     db = Database.new(connection_options, pool_options, &factory)
     prefilled = db.pool.prefill
@@ -1221,13 +1353,19 @@ pub class Database
   #   nil
   # end!
   # ```
+  #
+  # The block runs on whichever worker opens a connection, so what it
+  # captures must be `Share`.
+  @[Share]
   def setup_connection(&proc : Connection -> Nil | DBError) : Nil | DBError
-    @setup_connection = proc
+    setup = SharedProc(Connection, Nil | DBError).of(&proc)
+    while @setup.update { |_| setup.as(SharedProc(Connection, Nil | DBError)?) }.is_a?(Cancelled)
+    end
     failed = nil.as(DBError?)
     @pool.each_resource do |conn|
       # out of the pool for the setup: a statement it runs must not release it
       conn.auto_release = false
-      set_up = @setup_connection.call(conn)
+      set_up = setup.call(conn)
       if set_up.is_a?(DBError)
         conn.close
         failed ||= set_up
@@ -1236,7 +1374,15 @@ pub class Database
     failed
   end
 
-  # Closes all connections to the database.
+  # What the block `setup_connection` gave answers for *conn*.
+  private def set_up(conn : Connection) : Nil | DBError
+    setup = @setup.get { |current| current }
+    return DBError.new("cancelled while setting up a connection") if setup.is_a?(Cancelled)
+    setup ? setup.call(conn) : nil
+  end
+
+  # Closes the database's connections: the idle ones now, and each one a
+  # task holds when the task releases it.
   def close : Nil
     @pool.close
   end

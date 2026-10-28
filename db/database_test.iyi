@@ -13,41 +13,43 @@ end
 
 describe "Database" do
   it "allows connection initialization" do
-    cnn_setup = [0]
+    # an atomic, not crystal's array: the setup block runs on whichever
+    # worker opens a connection, so it captures only `Share` values
+    cnn_setup = Atomic(Int32).new(0)
     ::Db.open "dummy://localhost:1027?initial_pool_size=2&max_pool_size=4&max_idle_pool_size=1" do |db|
       # crystal's constructor opened the initial connections; iyi's pool opens them on prefill
       db.pool.prefill.or_panic
-      assert cnn_setup[0] == 0
+      assert cnn_setup.get == 0
 
       db.setup_connection do |cnn|
-        cnn_setup[0] += 1
+        cnn_setup.add(1)
         assert cnn.scalar("a").or_panic == "a"
         nil
       end.or_panic
 
-      assert cnn_setup[0] == 2
+      assert cnn_setup.get == 2
 
       db.using_connection do
-        assert cnn_setup[0] == 2
+        assert cnn_setup.get == 2
         db.using_connection do
-          assert cnn_setup[0] == 2
+          assert cnn_setup.get == 2
           db.using_connection do
-            assert cnn_setup[0] == 3
+            assert cnn_setup.get == 3
             db.using_connection do
-              assert cnn_setup[0] == 4
+              assert cnn_setup.get == 4
             end.or_panic
             # the pool didn't shrink no new initialization should be done next
             db.using_connection do
-              assert cnn_setup[0] == 4
+              assert cnn_setup.get == 4
             end.or_panic
           end.or_panic
           # the pool shrink 1. max_idle_pool_size=1
           # after the previous end there where 2.
           db.using_connection do
-            assert cnn_setup[0] == 4
+            assert cnn_setup.get == 4
             # so now there will be a new connection created
             db.using_connection do
-              assert cnn_setup[0] == 5
+              assert cnn_setup.get == 5
             end.or_panic
           end.or_panic
         end.or_panic

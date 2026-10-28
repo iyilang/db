@@ -3,22 +3,55 @@
 #
 # The resource type is duck-typed as it is in crystal-db: `close` is
 # required; `closed?`, `before_checkout` and `after_release` are called when
-# the resource has them.
+# the resource has them. A resource is an object, a class's instance: the
+# pool knows the one it is given back by its `object_id`.
 #
-# crystal-db guards the pool with a `Mutex` for multi-threaded runtimes. iyi's
-# tasks share their group's thread and interleave only where one parks
-# (SPEC.md III.4.5), so the bookkeeping between two parks is already atomic and
-# the pool holds no lock. `@inflight` keeps counting the resources being built
-# while their builder is parked, as it does in crystal-db, and `each_resource`
-# takes each resource out of the pool while its block may park.
+# **Every worker may share one pool.** Since iyi 0.19.0 a program's tasks
+# run on a pool of worker threads (`spawn_parallel`), and a pool kept in a
+# constant is reached by tasks on all of them at once. v0.3.0 kept its
+# bookkeeping with no lock, from when iyi's tasks shared one thread, and two
+# workers checking out at once were handed one connection (db#1). Now:
+#
+# * Which resource is idle, which is out and how many are being built is
+#   decided behind one `Mutex` (std/mutex), in a `PoolBook`. A task that
+#   finds the lock held parks, and its worker runs other tasks meanwhile.
+# * A resource goes into the book and out of it inside a `PoolSlot`, the one
+#   type `Share` is trusted for here. A connection is not `Share`, being a
+#   socket and buffers that one task uses at a time, so nothing else lets
+#   one cross the lock; the book hands each slot to one task at a time.
+# * Opening and closing resources, and their hooks, run outside the lock, in
+#   the task that holds the resource, so a slow connect does not hold up
+#   every checkout.
+# * A checkout that finds no resource free and no room for one parks on a
+#   channel of its own, registered in the book under the same lock that
+#   found nothing, so no release can slip in between. A release hands its
+#   resource straight to the checkout that has waited longest, which no
+#   other checkout can then take first.
+# * The factory runs on whichever worker builds a resource, several at once.
+#   `Pool.new` is `@[Share]`, so the compiler checks its block where it is
+#   written, as it checks a parallel task's, and the pool keeps it as a
+#   `SharedProc`.
+# * The counts `stats` answers are atomics, written with the lock held and
+#   read without it.
+#
+# So `Pool(T)` is `Share` by its fields, whatever `T` is, and a parallel task
+# may hold one. It says so as well, `@[Share(owns: true)]`: a program that
+# builds from db's artifacts reads the marker rather than the fields, and a
+# generic type found `Share` by its fields is exported as one that is `Share`
+# when its arguments are - which `Pool(Connection)` is not, a connection not
+# being `Share`. The pool owns its resources as `Mutex(T)` owns its value:
+# a task reaches one only between a checkout and its release.
 module db/pooling
 
 import std/uri::{Params}
 import std/time::{Time}
 import std/annotations::{Deprecated}
+import std/mutex::{Mutex}
+import std/shared_proc::{SharedProc}
 import db/errors::*
 import db/query_params::*
 
+@[Share(owns: true)]
 pub class Pool(T)
   # How a pool is sized and how long it waits. Written out rather than with
   # `record`, whose struct is not `pub` and so not part of an artifact.
@@ -88,25 +121,42 @@ pub class Pool(T)
 
   # Pool state
 
-  # every open resource managed by this pool
-  @total : Array(T)
-  # resources available for checkout
-  @idle : Set(T)
-  # resources being built (in neither *@idle* nor *@total* yet)
-  @inflight : Int32
-  # set by `close`: a closed pool builds and hands out nothing
-  @closed = false
-
-  # tells a waiting checkout that a resource was released, or left the pool
-  @availability_channel : Channel(Nil)
-
-  @factory : Proc(T | DBError)
+  # every resource, idle or out, and the checkouts waiting for one
+  @book : Mutex(PoolBook(T))
+  @factory : SharedProc(Nil, T | DBError)
+  # what `stats` reads without the lock, written with it held after every
+  # change to the book
+  @open_count : Atomic(Int32)
+  @idle_count : Atomic(Int32)
+  @inflight_count : Atomic(Int32)
 
   # Builds the pool without opening anything: `prefill` opens the
   # `initial_pool_size` resources, and a checkout opens one when none is idle.
   # Crystal's constructor opened them itself; here opening can fail, and a
   # constructor has no error to answer.
-  def initialize(pool_options : Options = Options.new, &factory : -> T | DBError)
+  #
+  # The *factory* runs on whichever worker needs a new resource, several at
+  # once, so it is checked where it is written as a parallel task's block
+  # is: what it captures must be `Share`.
+  @[Share]
+  def self.new(pool_options : Options = Options.new, &factory : -> T | DBError) : Pool(T)
+    new(pool_options, SharedProc(Nil, T | DBError).of { |_| factory.call })
+  end
+
+  @[Deprecated("Use `#new` with Pool::Options instead")]
+  @[Share]
+  def self.new(initial_pool_size : Int32 = 1, max_pool_size : Int32 = 0, max_idle_pool_size : Int32 = 1, checkout_timeout : Float64 = 5.0,
+               retry_attempts : Int32 = 1, retry_delay : Float64 = 0.2, &factory : -> T | DBError) : Pool(T)
+    options = Options.new(
+      initial_pool_size: initial_pool_size, max_pool_size: max_pool_size,
+      max_idle_pool_size: max_idle_pool_size, checkout_timeout: checkout_timeout,
+      retry_attempts: retry_attempts, retry_delay: retry_delay)
+    new(options, SharedProc(Nil, T | DBError).of { |_| factory.call })
+  end
+
+  # A pool over a factory already checked: the one `new` with a block
+  # builds.
+  def initialize(pool_options : Options, @factory : SharedProc(Nil, T | DBError))
     @initial_pool_size = pool_options.initial_pool_size
     @max_pool_size = pool_options.max_pool_size
     @max_idle_pool_size = pool_options.max_idle_pool_size
@@ -114,52 +164,46 @@ pub class Pool(T)
     @retry_attempts = pool_options.retry_attempts
     @retry_delay = pool_options.retry_delay
 
-    @total = [] of T
-    @idle = Set(T).new
-    @inflight = 0
-    @availability_channel = Channel(Nil).new
-    @factory = -> { factory.call.as(T | DBError) }
-  end
-
-  @[Deprecated("Use `#new` with Pool::Options instead")]
-  def initialize(initial_pool_size : Int32 = 1, max_pool_size : Int32 = 0, max_idle_pool_size : Int32 = 1, checkout_timeout : Float64 = 5.0,
-                 retry_attempts : Int32 = 1, retry_delay : Float64 = 0.2, &factory : -> T | DBError)
-    initialize(
-      Options.new(
-        initial_pool_size: initial_pool_size, max_pool_size: max_pool_size,
-        max_idle_pool_size: max_idle_pool_size, checkout_timeout: checkout_timeout,
-        retry_attempts: retry_attempts, retry_delay: retry_delay),
-      &factory)
+    @book = Mutex.new { PoolBook(T).new }
+    @open_count = Atomic(Int32).new(0)
+    @idle_count = Atomic(Int32).new(0)
+    @inflight_count = Atomic(Int32).new(0)
   end
 
   # Opens resources until `initial_pool_size` of them are open. The first
   # resource the factory cannot build is answered and the rest are not
   # attempted.
   def prefill : Nil | DBError
-    while @total.size < @initial_pool_size
-      build_resource!
+    count = @initial_pool_size
+    while true
+      reserved = @book.get { |book| room = book.reserve(count); note(book); room }
+      next if reserved.is_a?(Cancelled)
+      break unless reserved
+      build(idle: true)!
     end
     nil
   end
 
-  # Closes every resource of the pool, and answers every checkout from now
-  # on, the waiting ones too, with an error.
+  # Closes the pool: every checkout from now on, the waiting ones too, is
+  # answered "the pool is closed". The idle resources are closed now; one a
+  # task holds is closed when the task releases it, so `close` is safe
+  # while other tasks are using the pool.
   def close : Nil
-    @closed = true
-    # closing a connection deletes it from `@total`: closed from a copy
-    resources = @total
-    @total = [] of T
-    @idle = Set(T).new
-    resources.each &.close
-    while notify_available
+    while @book.lock { |book| book.close; note(book) }.is_a?(Cancelled)
+    end
+    while true
+      slot = @book.get { |book| idle = book.close_idle; note(book); idle }
+      next if slot.is_a?(Cancelled)
+      break unless slot
+      slot.resource.close
     end
   end
 
   def stats : Stats
     Stats.new(
-      open_connections: @total.size,
-      idle_connections: @idle.size,
-      in_flight_connections: @inflight,
+      open_connections: @open_count.get,
+      idle_connections: @idle_count.get,
+      in_flight_connections: @inflight_count.get,
       max_connections: @max_pool_size,
     )
   end
@@ -167,27 +211,7 @@ pub class Pool(T)
   # An idle resource, a new one when the pool may grow, or one released
   # within `checkout_timeout`; `PoolTimeout` when none came.
   def checkout : T | DBError
-    deadline = nil.as(Float64?)
-    resource = nil
-    until resource
-      return DBError.new("the pool is closed") if @closed
-      if @idle.empty?
-        if can_increase_pool?
-          resource = build_resource!
-        else
-          # one deadline for every wait: a woken checkout that finds the
-          # resource taken waits only what is left of it
-          limit = deadline || now_ms + @checkout_timeout * 1000
-          deadline = limit
-          wait_for_available(limit - now_ms)!
-          resource = pick_available
-        end
-      else
-        resource = pick_available
-      end
-    end
-
-    @idle.delete resource
+    resource = take!
     if resource.responds_to?(:before_checkout)
       resource.before_checkout
     end
@@ -201,25 +225,16 @@ pub class Pool(T)
     yield resource
   end
 
+  # Gives back a resource `checkout` answered: to the checkout that has
+  # waited longest, else idle, else - more idle than `max_idle_pool_size`,
+  # or the pool closed - it is closed. A closed resource just leaves the
+  # pool.
   def release(resource : T) : Nil
-    # `close` closed every resource the pool had
-    return if @closed
-
-    if resource.responds_to?(:closed?) && resource.closed?
-      @total.delete(resource)
-    elsif can_increase_idle_pool
-      @idle.add resource
-      if resource.responds_to?(:after_release)
-        resource.after_release
-      end
-    else
-      resource.close
-      @total.delete(resource)
+    closed = resource.responds_to?(:closed?) && resource.closed?
+    if !closed && resource.responds_to?(:after_release)
+      resource.after_release
     end
-
-    # a waiting checkout takes the idle resource, or builds one in the room
-    # this one left
-    notify_available
+    give_back(resource, closed, @max_idle_pool_size)
   end
 
   # Runs the block again while it answers a lost or refused resource. Every
@@ -227,10 +242,14 @@ pub class Pool(T)
   # grow); after those, each attempt waits `retry_delay` seconds first.
   # `PoolRetryAttemptsExceeded` once `retry_attempts` more are spent.
   def retry(& : -> U) : U | DBError forall U
-    current_available = @idle.size
+    # read off the counts, without the lock: the number of quick attempts
+    # need not be exact
+    current_available = @idle_count.get
     # if the pool hasn't reached the max size, allow 1 attempt
     # to make a new resource if needed without sleeping
-    current_available += 1 if can_increase_pool?
+    if @max_pool_size == 0 || @open_count.get + @inflight_count.get < @max_pool_size
+      current_available += 1
+    end
 
     (current_available + @retry_attempts).times do |i|
       if i >= current_available
@@ -252,88 +271,141 @@ pub class Pool(T)
     PoolRetryAttemptsExceeded.new
   end
 
-  # Yields every idle resource. Each is out of the pool while its block
-  # runs, so a checkout cannot take it while the block parks, and goes back
-  # unless the block closed it.
+  # Yields every idle resource. They are all out of the pool while the
+  # blocks run, so no checkout takes one meanwhile, and each goes back
+  # unless its block closed it - idle again, as many as there were, even
+  # past `max_idle_pool_size`.
   def each_resource(& : T -> Nil) : Nil
-    @idle.to_a.each do |resource|
-      # an earlier block parked, and a checkout took this one meanwhile
-      next unless @idle.includes?(resource)
-      @idle.delete resource
+    taken = [] of T
+    while true
+      slot = @book.get { |book| idle = book.take_idle; note(book); idle }
+      next if slot.is_a?(Cancelled)
+      break unless slot
+      taken << slot.resource
+    end
+    taken.each do |resource|
       yield resource
-      if @closed || (resource.responds_to?(:closed?) && resource.closed?)
-        @total.delete(resource)
-      else
-        @idle.add resource
-      end
-      notify_available
+      give_back(resource, resource.responds_to?(:closed?) && resource.closed?, 2147483647)
     end
   end
 
   def is_available?(resource : T) : Bool
-    @idle.includes?(resource)
+    id = resource.object_id
+    while true
+      idle = @book.get { |book| book.idle?(id) }
+      return idle unless idle.is_a?(Cancelled)
+    end
   end
 
+  # Takes a resource out of the pool for good: it was lost, or closed.
   def delete(resource : T) : Nil
-    @total.delete(resource)
-    @idle.delete(resource)
-    notify_available
+    id = resource.object_id
+    while @book.lock { |book| book.delete(id); note(book) }.is_a?(Cancelled)
+    end
   end
 
-  private def build_resource : T | DBError
-    @inflight += 1
-    defer @inflight -= 1
-    resource = @factory.call
-    return resource if resource.is_a?(DBError)
-    if @closed
+  # The resource for a checkout: an idle one, a new one when there is room,
+  # or one handed over by a release.
+  private def take : T | DBError
+    max = @max_pool_size
+    step = @book.get { |book| taken = book.take(max, nil); note(book); taken }
+    return DBError.new("the checkout was cancelled") if step.is_a?(Cancelled)
+    if step == PoolStep::Wait
+      # Nothing free: wait on a channel of its own, registered by the same
+      # look that finds nothing free, so no release comes in between.
+      waiter = Channel(PoolSlot(T) | PoolStep).new(1)
+      step = @book.get { |book| taken = book.take(max, waiter); note(book); taken }
+      return DBError.new("the checkout was cancelled") if step.is_a?(Cancelled)
+      step = wait(waiter)! if step == PoolStep::Wait
+    end
+    case step
+    when PoolSlot(T)
+      step.resource
+    when PoolStep::Build
+      build(idle: false)
+    else
+      DBError.new("the pool is closed")
+    end
+  end
+
+  # Parks until a release hands *waiter* a resource, room to build one or
+  # the news that the pool closed, or until `checkout_timeout` is up.
+  private def wait(waiter : Channel(PoolSlot(T) | PoolStep)) : PoolSlot(T) | PoolStep | DBError
+    sent = nil.as(PoolSlot(T) | PoolStep | Nil)
+    select
+    when got = waiter.receive
+      sent = got if got.is_a?(PoolSlot(T)) || got.is_a?(PoolStep)
+    when timeout(timeout_ms(@checkout_timeout * 1000))
+    end
+    return sent if sent
+    # Timed out, or cancelled: off the list, unless a release got to this
+    # checkout first, and what it sent, under the lock, is in the channel.
+    removed = false
+    while true
+      got = @book.get { |book| book.unwait(waiter) }
+      unless got.is_a?(Cancelled)
+        removed = got
+        break
+      end
+    end
+    return PoolTimeout.new("Could not check out a connection in #{@checkout_timeout} seconds") if removed
+    left = waiter.take_now
+    left.is_a?(ChannelClosed) ? DBError.new("the pool is closed") : left
+  end
+
+  # Builds a resource the book counted in flight: the checkout's own
+  # (*idle* false), or an idle one (`prefill`).
+  private def build(idle : Bool) : T | DBError
+    settled = false
+    # a factory that panics leaves no resource counted in flight
+    defer (build_failed unless settled)
+    resource = @factory.call(nil)
+    if resource.is_a?(DBError)
+      settled = true
+      build_failed
+      return resource
+    end
+    slot = PoolSlot(T).hold(resource)
+    kept = false
+    while true
+      got = @book.get { |book| open = book.built(slot, idle); note(book); open }
+      unless got.is_a?(Cancelled)
+        kept = got
+        break
+      end
+    end
+    settled = true
+    unless kept
       # built while the pool was being closed
       resource.close
       return DBError.new("the pool is closed")
     end
-    @total << resource
-    @idle.add resource
     resource
   end
 
-  private def can_increase_pool? : Bool
-    @max_pool_size == 0 || @total.size + @inflight < @max_pool_size
-  end
-
-  private def can_increase_idle_pool : Bool
-    @idle.size < @max_idle_pool_size
-  end
-
-  private def pick_available : T?
-    @idle.each { |resource| return resource }
-    nil
-  end
-
-  # Wakes one waiting checkout, if there is one.
-  private def notify_available : Bool
-    woken = false
-    select
-    when @availability_channel.send(nil)
-      woken = true
-    else
+  private def build_failed : Nil
+    while @book.lock { |book| book.build_failed; note(book) }.is_a?(Cancelled)
     end
-    woken
   end
 
-  private def wait_for_available(ms : Float64) : Nil | DBError
-    available = false
-    if ms > 0
-      select
-      when @availability_channel.receive
-        available = true
-      when timeout(timeout_ms(ms))
+  private def give_back(resource : T, closed : Bool, max_idle : Int32) : Nil
+    id = resource.object_id
+    outcome = PoolReturn::Gone
+    while true
+      got = @book.get { |book| given = book.give_back(id, closed, max_idle); note(book); given }
+      unless got.is_a?(Cancelled)
+        outcome = got
+        break
       end
     end
-    return nil if available
-    PoolTimeout.new("Could not check out a connection in #{@checkout_timeout} seconds")
+    resource.close if outcome == PoolReturn::Close
   end
 
-  private def now_ms : Float64
-    Time.monotonic.total_milliseconds
+  # The counts `stats` reads, from the book; called with the lock held.
+  private def note(book : PoolBook(T)) : Nil
+    @open_count.set(book.open_size)
+    @idle_count.set(book.idle_size)
+    @inflight_count.set(book.inflight)
   end
 
   # *ms* as a timer's milliseconds: rounded up, and a wait too long for an
@@ -342,5 +414,202 @@ pub class Pool(T)
     return 2147483647 if ms >= 2147483647
     return 0 if ms <= 0
     ms.ceil.to_i32
+  end
+end
+
+# A resource as the book holds it, and the one claim of `Share` in this
+# module (`owns: true`, as `Mutex(T)` makes it): the book hands a slot to
+# one task at a time - a checkout takes it out of the lock, and only a
+# release puts it back - and only the task holding the slot reaches its
+# resource, so the resource is never in two tasks' hands although it need
+# not be `Share` itself. Made by `Pool` alone (`hold`), and `pub` only so
+# that an artifact carries its marker to the programs that instantiate a
+# pool.
+@[Share(owns: true)]
+pub class PoolSlot(T)
+  getter resource : T
+  getter id : UInt64
+
+  protected def self.hold(resource : T) : PoolSlot(T)
+    new(resource)
+  end
+
+  private def initialize(@resource : T)
+    @id = @resource.object_id
+  end
+end
+
+# What the book tells a checkout to do, when it has no resource to give it.
+enum PoolStep
+  # Room for one more: build it. The book counts it in flight already.
+  Build
+  # Nothing free and no room: wait for a release.
+  Wait
+  # The pool is closed.
+  Closed
+end
+
+# What became of a resource given back to the book.
+enum PoolReturn
+  # Idle again, or handed to a waiting checkout.
+  Kept
+  # Out of the pool, and the task that gave it back closes it: no room for
+  # it idle, or the pool is closed.
+  Close
+  # Out of the pool already: closed, or not this pool's.
+  Gone
+end
+
+# A pool's bookkeeping, only ever reached behind the pool's `Mutex`. Its
+# methods decide and return; nothing here opens, closes or waits.
+class PoolBook(T)
+  # every open resource, idle or out, by object id
+  @open : Hash(UInt64, PoolSlot(T))
+  # the idle ones, the longest idle first
+  @idle : Array(PoolSlot(T))
+  # the checkouts parked for a resource, the longest waiting first; each
+  # channel holds one value, so a send to it never parks
+  @waiters : Array(Channel(PoolSlot(T) | PoolStep))
+  # resources being built, in neither list yet
+  getter inflight : Int32 = 0
+  @closed = false
+
+  def initialize
+    @open = {} of UInt64 => PoolSlot(T)
+    @idle = [] of PoolSlot(T)
+    @waiters = [] of Channel(PoolSlot(T) | PoolStep)
+  end
+
+  def open_size : Int32
+    @open.size
+  end
+
+  def idle_size : Int32
+    @idle.size
+  end
+
+  def idle?(id : UInt64) : Bool
+    @idle.any? { |slot| slot.id == id }
+  end
+
+  # An idle slot, room to build, or a wait - registered when *waiter* is
+  # given, so a release after this finds it.
+  def take(max : Int32, waiter : Channel(PoolSlot(T) | PoolStep)?) : PoolSlot(T) | PoolStep
+    return PoolStep::Closed if @closed
+    if slot = @idle.shift?
+      return slot
+    end
+    if room?(max)
+      @inflight += 1
+      return PoolStep::Build
+    end
+    @waiters << waiter if waiter
+    PoolStep::Wait
+  end
+
+  # *waiter* off the list, its wait over: false when a release had sent it
+  # something already.
+  def unwait(waiter : Channel(PoolSlot(T) | PoolStep)) : Bool
+    !@waiters.delete(waiter).nil?
+  end
+
+  # Room for one more resource, open or being built.
+  def room?(max : Int32) : Bool
+    max == 0 || @open.size + @inflight < max
+  end
+
+  # One more build for `prefill`, while fewer than *count* are open.
+  def reserve(count : Int32) : Bool
+    return false if @closed || @open.size + @inflight >= count
+    @inflight += 1
+    true
+  end
+
+  # A reserved build, done: the resource is the builder's own, or idle
+  # (*idle*), or the longest waiting checkout's. False when the pool closed
+  # meanwhile, and the builder closes it.
+  def built(slot : PoolSlot(T), idle : Bool) : Bool
+    @inflight -= 1
+    return false if @closed
+    @open[slot.id] = slot
+    if idle
+      if waiter = @waiters.shift?
+        waiter.put_now(slot)
+      else
+        @idle << slot
+      end
+    end
+    true
+  end
+
+  # A reserved build that failed: its room is free again.
+  def build_failed : Nil
+    @inflight -= 1
+    pass_room
+  end
+
+  # The resource *id*, given back by the task that held it.
+  def give_back(id : UInt64, closed : Bool, max_idle : Int32) : PoolReturn
+    slot = @open[id]?
+    # not this pool's, or deleted already, or given back twice
+    return PoolReturn::Gone if slot.nil? || @idle.includes?(slot)
+    if closed
+      @open.delete(id)
+      pass_room
+      return PoolReturn::Gone
+    end
+    if @closed
+      @open.delete(id)
+      return PoolReturn::Close
+    end
+    if waiter = @waiters.shift?
+      waiter.put_now(slot)
+      return PoolReturn::Kept
+    end
+    if @idle.size < max_idle
+      @idle << slot
+      return PoolReturn::Kept
+    end
+    @open.delete(id)
+    PoolReturn::Close
+  end
+
+  # The resource *id* out for good, idle or not.
+  def delete(id : UInt64) : Nil
+    slot = @open.delete(id)
+    return unless slot
+    @idle.delete(slot)
+    pass_room
+  end
+
+  # An idle slot taken out, to be yielded by `each_resource`.
+  def take_idle : PoolSlot(T)?
+    @idle.shift?
+  end
+
+  # An idle slot out of the pool, for `Pool#close` to close.
+  def close_idle : PoolSlot(T)?
+    slot = @idle.shift?
+    @open.delete(slot.id) if slot
+    slot
+  end
+
+  # Every waiting checkout is told the pool closed; resources out are
+  # closed as they come back.
+  def close : Nil
+    @closed = true
+    while waiter = @waiters.shift?
+      waiter.put_now(PoolStep::Closed)
+    end
+  end
+
+  # Room for one more came free: the checkout that has waited longest
+  # builds in it.
+  private def pass_room : Nil
+    return if @closed
+    if waiter = @waiters.shift?
+      @inflight += 1
+      waiter.put_now(PoolStep::Build)
+    end
   end
 end
