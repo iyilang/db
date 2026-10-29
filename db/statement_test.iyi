@@ -2,6 +2,7 @@
 module db/statement_test
 
 import std/log::{Log, Entry, MemoryBackend, Severity}
+import std/mutex::{Mutex}
 import db
 import db/errors::*
 import db/core::*
@@ -12,13 +13,15 @@ def dummy_prepared(cnn : DummyConnection, query : String) : DummyStatement
   cnn.prepared(query).or_panic.as(DummyStatement)
 end
 
-# The "Executing query" entries LOG wrote while running the block.
+# The "Executing query" entries LOG wrote while running the block. The
+# backend is set on std's logger for "db", the one `LOG` keeps behind its
+# lock: a `MemoryBackend` is not `Share`, so no lock's block may take it.
 def capture_log(& : -> Nil) : Array(Entry)
   backend = MemoryBackend.new
-  LOG.backend = backend
+  Log.for("db").backend = backend
   previous_level = LOG.level
   LOG.level = Severity::Debug
-  defer LOG.backend = nil
+  defer Log.for("db").backend = nil
   defer LOG.level = previous_level
   yield
   backend.entries.select { |e| e.severity == Severity::Debug && e.message == "Executing query" }
@@ -364,16 +367,19 @@ describe "Statement" do
   # has no open classes, so the hooks are a registry on `Statement`.
   describe "def_around_query_or_exec" do
     it "runs every hook around the driver's statements, the first added outermost" do
-      seen = [] of String
+      # a hook runs on whichever worker runs the statement: what it keeps
+      # goes behind a lock, and what it captures is `Share`
+      seen = Mutex.new { [] of String }
       Statement.def_around_query_or_exec do |stmt, args, run|
-        seen << "outer before #{stmt.command} #{args.size}"
+        before = "outer before #{stmt.command} #{args.size}"
+        seen.lock { |lines| lines << before }.or_panic
         run.call
-        seen << "outer after"
+        seen.lock { |lines| lines << "outer after" }.or_panic
       end
       Statement.def_around_query_or_exec do |stmt, args, run|
-        seen << "inner before"
+        seen.lock { |lines| lines << "inner before" }.or_panic
         run.call
-        seen << "inner after"
+        seen.lock { |lines| lines << "inner after" }.or_panic
       end
       defer Statement.clear_around_query_or_exec
 
@@ -382,8 +388,9 @@ describe "Statement" do
         assert db.scalar("7").or_panic == 7
       end
 
-      assert seen == ["outer before 1, ? 1", "inner before", "inner after", "outer after",
-                      "outer before 7 0", "inner before", "inner after", "outer after"]
+      assert seen.get { |lines| lines.join("|") }.or_panic ==
+             ["outer before 1, ? 1", "inner before", "inner after", "outer after",
+              "outer before 7 0", "inner before", "inner after", "outer after"].join("|")
     end
 
     it "answers an error when a hook does not run the query" do
@@ -397,9 +404,9 @@ describe "Statement" do
     end
 
     it "runs nothing once the hooks are cleared" do
-      count = 0
+      count = Atomic(Int32).new(0)
       Statement.def_around_query_or_exec do |stmt, args, run|
-        count += 1
+        count.add(1)
         run.call
       end
       Statement.clear_around_query_or_exec
@@ -407,7 +414,7 @@ describe "Statement" do
       with_dummy do |db|
         db.exec("1").or_panic
       end
-      assert count == 0
+      assert count.get == 0
     end
   end
 end

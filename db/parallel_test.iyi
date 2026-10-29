@@ -1,0 +1,192 @@
+# db#1: one `Database` shared by tasks on every worker - the issue's
+# program on the dummy driver, a pool too small for its tasks, a close
+# while they query, and connections failing and lost under them.
+#
+# Twelve workers whatever the machine has, as many as db#1 was found
+# with: `IyiWorkers.count` is set before the first parallel task.
+module db/parallel_test
+
+import std/time::{Time, Span}
+import db
+import db/errors::*
+import db/core::*
+import db/spec::{describe, it, expect_error}
+import db/testing/dummy_driver::*
+
+IyiWorkers.count = 12
+
+# The issue's program as it was written: the database a constant, reached
+# from the parallel tasks through a function. It compiles with no `Share`
+# error and no warning, since `Database` is `Share`.
+DATABASE = ::Db.open("dummy://host?max_idle_pool_size=64&initial_pool_size=8").or_panic
+
+def ask(n : Int64) : Int64
+  DATABASE.query_one("?", n, as: Int64).or_panic
+end
+
+# 32 parallel tasks asking 2000 times each for the number they send.
+def ask_everything(db : Database) : Nil
+  group do |g|
+    32.times do |t|
+      g.spawn_parallel do
+        2000.times do |k|
+          n = t.to_i64 * 100000_i64 + k.to_i64
+          got = db.query_one("?", n, as: Int64).or_panic
+          raise "asked #{n}, got #{got}" if got != n
+        end
+        nil
+      end
+    end
+  end
+end
+
+# Every connection back in the pool, and none in flight.
+def assert_settled(db : Database) : Nil
+  stats = db.pool.stats
+  assert stats.in_flight_connections == 0
+  assert stats.idle_connections == stats.open_connections, "#{stats.idle_connections} idle of #{stats.open_connections} open"
+end
+
+describe "a Database every worker shares (db#1)" do
+  it "answers the issue's program, through a constant, with the rows each task asked for" do
+    group do |g|
+      32.times do |t|
+        g.spawn_parallel do
+          2000.times do |k|
+            n = t.to_i64 * 100000_i64 + k.to_i64
+            got = ask(n)
+            raise "asked #{n}, got #{got}" if got != n
+          end
+          nil
+        end
+      end
+    end
+    assert_settled(DATABASE)
+  end
+
+  it "answers every task with its own rows, 20 runs over" do
+    20.times do
+      db = ::Db.open("dummy://host?max_idle_pool_size=64&initial_pool_size=8").or_panic
+      ask_everything(db)
+      assert_settled(db)
+      db.close
+    end
+  end
+
+  # More checkouts wait than there are workers: had a waiting checkout
+  # held its worker, the task holding the connections would never wake
+  # from its sleep to give them back, and every wait would time out.
+  it "parks the checkouts a full pool cannot serve, not their workers, and resumes them" do
+    db = ::Db.open("dummy://host?initial_pool_size=1&max_pool_size=2&max_idle_pool_size=2&checkout_timeout=10").or_panic
+    go = Channel(Nil).new
+    served = Atomic(Int32).new(0)
+    most = Atomic(Int32).new(0)
+    started = Time.monotonic
+    group do |g|
+      g.spawn_parallel do
+        a = db.checkout.or_panic
+        b = db.checkout.or_panic
+        go.close
+        sleep 300
+        a.release
+        b.release
+        nil
+      end
+      40.times do |t|
+        g.spawn_parallel do
+          go.receive
+          n = t.to_i64
+          got = db.query_one("?", n, as: Int64).or_panic
+          raise "asked #{n}, got #{got}" if got != n
+          open = db.pool.stats.open_connections
+          seen = most.get
+          while open > seen && !most.compare_and_set(seen, open)[1]
+            seen = most.get
+          end
+          served.add(1)
+          nil
+        end
+      end
+    end
+    waited = Time.monotonic - started
+    assert served.get == 40
+    assert most.get <= 2, "#{most.get} connections open, of at most 2"
+    assert waited >= Span.milliseconds(300)
+    assert waited < Span.seconds(5), "took #{waited}"
+    assert_settled(db)
+    db.close
+  end
+
+  it "closes while tasks on every worker are querying" do
+    DummyConnection.clear_connections
+    db = ::Db.open("dummy://host?initial_pool_size=4&max_pool_size=8&max_idle_pool_size=8").or_panic
+    answered = Atomic(Int32).new(0)
+    refused = Atomic(Int32).new(0)
+    group do |g|
+      32.times do |t|
+        g.spawn_parallel do
+          k = 0
+          while true
+            n = t.to_i64 * 100000_i64 + k.to_i64
+            got = db.query_one("?", n, as: Int64)
+            if got.is_a?(DBError)
+              raise "expected the pool closed, got #{got.message}" if got.message != "the pool is closed"
+              refused.add(1)
+              break
+            end
+            raise "asked #{n}, got #{got}" if got != n
+            answered.add(1)
+            k += 1
+          end
+          nil
+        end
+      end
+      sleep 100
+      db.close
+    end
+    assert refused.get == 32
+    assert answered.get > 0
+    # the connections the tasks held were closed as they were released
+    assert db.pool.stats.open_connections == 0
+    assert DummyConnection.connections.all?(&.closed?)
+  end
+
+  it "takes back the connection a statement failed on, and drops a lost one" do
+    DummyConnection.clear_connections
+    db = ::Db.open("dummy://host?initial_pool_size=4&max_pool_size=8&max_idle_pool_size=8&retry_attempts=2&retry_delay=0").or_panic
+    group do |g|
+      32.times do |t|
+        g.spawn_parallel do
+          200.times do |k|
+            n = t.to_i64 * 100000_i64 + k.to_i64
+            case k % 4
+            when 0
+              # the statement fails; its connection goes back to the pool
+              expect_error(db.exec("raise"), DBError, "forced exception due to query")
+            when 1
+              # the connection is lost under the task that holds it, which
+              # gives it back closed: the pool drops it
+              db.using_connection do |cnn|
+                cnn.as(DummyConnection).disconnect
+                expect_error(cnn.exec("x"), ConnectionLost)
+                nil
+              end.or_panic
+            when 2
+              # every connection the statement is tried on is lost
+              expect_error(db.exec("raise ConnectionLost"), PoolRetryAttemptsExceeded)
+            else
+              got = db.query_one("?", n, as: Int64).or_panic
+              raise "asked #{n}, got #{got}" if got != n
+            end
+          end
+          nil
+        end
+      end
+    end
+    assert_settled(db)
+    open = DummyConnection.connections.reject(&.closed?)
+    assert db.pool.stats.open_connections == open.size
+    assert open.all? { |cnn| db.pool.is_available?(cnn) }
+    db.close
+  end
+end

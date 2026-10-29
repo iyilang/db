@@ -80,24 +80,29 @@ module db
 # `db/serializable`; a program imports the ones it names.
 
 import std/uri::{URI, Params}
+import std/mutex::{Mutex}
 import db/errors::*
 import db/core::*
 
 pub VERSION = "0.3.0"
 
-DRIVERS = {} of String => Driver.class
+# The registered drivers. `Db.open` reads it on whichever worker opens a
+# database, so it is behind a lock.
+DRIVERS = Mutex.new { {} of String => Driver.class }
 
 # The driver class registered for *driver_name*.
 pub def driver_class(driver_name : String) : Driver.class | DBError
-  DRIVERS[driver_name]? ||
-    ArgumentError.new(%(no driver was registered for the schema "#{driver_name}", did you maybe forget to require the database driver?))
+  found = DRIVERS.get { |drivers| drivers[driver_name]? }
+  return DBError.new("cancelled while looking up a driver") if found.is_a?(Cancelled)
+  found || ArgumentError.new(%(no driver was registered for the schema "#{driver_name}", did you maybe forget to require the database driver?))
 end
 
 # Registers a driver class for a given *driver_name*. Called by driver
 # implementors, from their module's top level, so importing the driver is
 # what registers it.
 pub def register_driver(driver_name : String, driver_class : Driver.class) : Nil
-  DRIVERS[driver_name] = driver_class
+  while DRIVERS.lock { |drivers| drivers[driver_name] = driver_class }.is_a?(Cancelled)
+  end
 end
 
 # Creates a `Database` pool and opens its initial connection(s) as
@@ -115,8 +120,27 @@ pub def open(uri : URI | String) : Database | DBError
   params = Params.parse(parsed.query || "")
   connection_options = driver.connection_options(params)!
   pool_options = driver.pool_options(params)!
-  builder = driver.connection_builder(parsed)!
+  builder = SharedBuilder.new(driver.connection_builder(parsed)!)
   Database.open(connection_options, pool_options) { builder.build }
+end
+
+# A driver's `ConnectionBuilder`, as the factory of the database `open`
+# makes holds it: `Share` on trust. The pool calls `build` from whichever
+# worker opens a connection, several at once, and a builder holds what the
+# URI said and only reads it (`ConnectionBuilder`'s contract). Trusted
+# rather than checked because a builder is often not `Share` by its fields
+# although nothing writes them: what a driver parsed its URI into is
+# written while it is parsed (pg's `ConnInfo`) or holds a `URI` (mysql's).
+# `pub` only so that an artifact carries its marker to the programs that
+# build `open`.
+@[Share]
+pub class SharedBuilder
+  def initialize(@builder : ConnectionBuilder)
+  end
+
+  def build : Connection | DBError
+    @builder.build
+  end
 end
 
 # Same as `open`, but the database is yielded and closed when the block is
