@@ -1,8 +1,11 @@
 ## v0.4.0
 
-Requires iyi 0.19.1: a `Database` shared by tasks on every worker needs
-`spawn_parallel` (0.19.0), and the `@[Share]` defs and `SharedProc` that check
-the blocks it keeps (0.19.1).
+Requires iyi 0.20.0: a `Database` shared by tasks on every worker needs
+`spawn_parallel` (0.19.0), the `@[Share]` defs and `SharedProc` that check
+the blocks it keeps (0.19.1), and 0.20.0's scheduler. On 0.19.1, tasks that
+park on a full pool while the task holding its connections sleeps are
+stopped most runs with "deadlock: every fiber is blocked", or wait out
+`checkout_timeout`; on 0.20.0 they are not.
 
 * A `Database` and its `Pool` are `Share`, so one kept in a constant may be
   used by parallel tasks on every worker, with no `Share` error and no
