@@ -1,4 +1,4 @@
-## Unreleased
+## v0.4.0
 
 Requires iyi 0.19.1: a `Database` shared by tasks on every worker needs
 `spawn_parallel` (0.19.0), and the `@[Share]` defs and `SharedProc` that check
