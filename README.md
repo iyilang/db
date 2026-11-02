@@ -13,9 +13,10 @@ require: errors are values, types are closed, and tasks are structured.
 
 ## Requirements
 
-iyi 0.19.1 or later: a `Database` shared by tasks on every worker needs
-`spawn_parallel` (0.19.0), and the `@[Share]` defs and `SharedProc` that
-check the blocks it keeps (0.19.1).
+iyi 0.20.0 or later: a `Database` shared by tasks on every worker needs
+`spawn_parallel` (0.19.0), the `@[Share]` defs and `SharedProc` that check
+the blocks it keeps (0.19.1), and 0.20.0's scheduler, on which a checkout
+parked on a full pool is woken when a connection comes back.
 
 ## Installation
 
