@@ -10,8 +10,9 @@
 # set of `"fail_close"` answers an error when it is closed.
 #
 # Its connections, statements and result sets may be made and used on any
-# worker (`spawn_parallel`): what it counts is atomic, and what it keeps for
+# worker (`spawn(unit: :new)`): what it counts is atomic, and what it keeps for
 # the tests to look at is behind a lock.
+@[Unsafe("the double's Made is taken as Share on trust, since a test looks at one only in the task that used it or after that task has ended")]
 module db/testing/dummy_driver
 
 import std/uri::{URI, Params}

@@ -2,7 +2,7 @@
 #
 # % iyi run manual/pool_concurrency.iyi -- --options="max_pool_size=5" --duration=30 --concurrency=4
 #
-# The tasks are parallel (`spawn_parallel`), as crystal's fibers were under
+# The tasks are parallel (`spawn(unit: :new)`), as crystal's fibers were under
 # `-Dpreview_mt`: they share one `Database` from every worker, as many
 # workers as `IYI_WORKERS` says, or one per core.
 module manual/pool_concurrency
@@ -60,7 +60,7 @@ puts "Starting test for #{duration} seconds..."
 running = Atomic(Int32).new(1)
 group do |g|
   concurrency.times do
-    g.spawn_parallel do
+    g.spawn(unit: :new) do
       while running.get == 1
         db.scalar "1"
         sleep 0
