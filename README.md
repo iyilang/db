@@ -13,10 +13,12 @@ require: errors are values, types are closed, and tasks are structured.
 
 ## Requirements
 
-iyi 0.20.0 or later: a `Database` shared by tasks on every worker needs
-`spawn_parallel` (0.19.0), the `@[Share]` defs and `SharedProc` that check
-the blocks it keeps (0.19.1), and 0.20.0's scheduler, on which a checkout
-parked on a full pool is woken when a connection comes back.
+iyi 0.21.0 or later: a `Database` shared by tasks on every worker needs
+parallel tasks (`spawn_parallel` in 0.19.0, spelled `spawn(unit: :new)`
+since 0.21.0, which is what the tests and manual programs write), the
+`@[Share]` defs and `SharedProc` that check the blocks it keeps (0.19.1),
+and 0.20.0's scheduler, on which a checkout parked on a full pool is woken
+when a connection comes back.
 
 ## Installation
 
@@ -95,7 +97,7 @@ choose how statements run.
 ### On every worker
 
 A `Database` is `Share`, so one opened once and kept in a constant serves
-parallel tasks (`spawn_parallel`) on every worker, a web server's handlers
+parallel tasks (`spawn(unit: :new)`) on every worker, a web server's handlers
 among them, with no `Share` error and no warning from the compiler:
 
 ```iyi
@@ -106,7 +108,7 @@ def ask(n : Int64) : Int64
 end
 
 group do |g|
-  32.times { |t| g.spawn_parallel { ask(t.to_i64); nil } }
+  32.times { |t| g.spawn(unit: :new) { ask(t.to_i64); nil } }
 end
 ```
 
@@ -192,7 +194,7 @@ crystal-db's.
 | `DB::MetadataValueConverter.arg_to_log` overloads | `CustomValue#to_log` | R-3 |
 | `Pool.new` and `Database.new` open the initial connections | `Pool#prefill` and `Database.open(...)` do; the constructors do no IO (a constructor has no error to answer) | III.1 |
 | `TopLevelTransaction.new` runs `BEGIN` | `Transaction#start` runs `BEGIN`/`SAVEPOINT`; `perform_commit`/`perform_rollback` are what a transaction subclass implements | III.1 |
-| `Pool` guards itself with a `Mutex` | so does iyi-db's, around its bookkeeping, since tasks run on every worker (`spawn_parallel`); a connection goes in and out of the lock in a slot that is `Share` on trust, as no connection is `Share` | III.4.4, III.4.13 |
+| `Pool` guards itself with a `Mutex` | so does iyi-db's, around its bookkeeping, since tasks run on every worker (`spawn(unit: :new)`); a connection goes in and out of the lock in a slot that is `Share` on trust, as no connection is `Share` | III.4.4, III.4.13 |
 | a pool's factory, `setup_connection`'s block and `def_around_query_or_exec`'s hooks may capture anything | they run on whichever worker needs them, so they may capture only `Share` values, checked where they are written (`@[Share]`) | III.4.4: data races are a compile error |
 | `disconnect!`-style names | no `!` in names | III.1.7 |
 | `DB::DriverSpecs.run do ... end` (implicit receiver) | `DriverSpecs.run do \|specs\| specs.... end` | no `with ... yield` |

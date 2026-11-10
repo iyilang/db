@@ -74,6 +74,7 @@
 #
 # `derive db_serializable` (module `db/serializable`) maps the rows of a
 # result set to a struct or class.
+@[Unsafe("SharedBuilder is taken as Share on trust: the pool calls a driver's builder from several workers at once, and a builder only reads what its URI was parsed into")]
 module db
 
 # The types live in `db/core`, `db/errors`, `db/value`, `db/pooling` and

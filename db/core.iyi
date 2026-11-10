@@ -24,6 +24,7 @@
 #   `tx.commit` before a `return` that should commit.
 # * Statement instrumentation is `Statement.def_around_query_or_exec { ... }`,
 #   a hook registry, because there is no reopening `DB::Statement` here (R-3).
+@[Unsafe("a database's pool is left uninitialized while it is built, so that the factory the pool keeps can capture the database, and nothing reads it before it is assigned")]
 module db/core
 
 import std/uri::{URI, Params}
@@ -1275,7 +1276,7 @@ end
 # ## Every worker
 #
 # A `Database` is `Share`: one kept in a constant may be used from parallel
-# tasks (`spawn_parallel`) on every worker. Its pool hands each connection
+# tasks (`spawn(unit: :new)`) on every worker. Its pool hands each connection
 # to one task at a time (`Pool`), and the blocks it keeps - the connection
 # factory and `setup_connection`'s - run on whichever worker opens a
 # connection, so each is checked where it is written, as a parallel task's

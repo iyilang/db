@@ -28,7 +28,7 @@ end
 def ask_everything(db : Database) : Nil
   group do |g|
     32.times do |t|
-      g.spawn_parallel do
+      g.spawn(unit: :new) do
         2000.times do |k|
           n = t.to_i64 * 100000_i64 + k.to_i64
           got = db.query_one("?", n, as: Int64).or_panic
@@ -51,7 +51,7 @@ describe "a Database every worker shares (db#1)" do
   it "answers the issue's program, through a constant, with the rows each task asked for" do
     group do |g|
       32.times do |t|
-        g.spawn_parallel do
+        g.spawn(unit: :new) do
           2000.times do |k|
             n = t.to_i64 * 100000_i64 + k.to_i64
             got = ask(n)
@@ -83,7 +83,7 @@ describe "a Database every worker shares (db#1)" do
     most = Atomic(Int32).new(0)
     started = Time.monotonic
     group do |g|
-      g.spawn_parallel do
+      g.spawn(unit: :new) do
         a = db.checkout.or_panic
         b = db.checkout.or_panic
         go.close
@@ -93,7 +93,7 @@ describe "a Database every worker shares (db#1)" do
         nil
       end
       40.times do |t|
-        g.spawn_parallel do
+        g.spawn(unit: :new) do
           go.receive
           n = t.to_i64
           got = db.query_one("?", n, as: Int64).or_panic
@@ -124,7 +124,7 @@ describe "a Database every worker shares (db#1)" do
     refused = Atomic(Int32).new(0)
     group do |g|
       32.times do |t|
-        g.spawn_parallel do
+        g.spawn(unit: :new) do
           k = 0
           while true
             n = t.to_i64 * 100000_i64 + k.to_i64
@@ -156,7 +156,7 @@ describe "a Database every worker shares (db#1)" do
     db = ::Db.open("dummy://host?initial_pool_size=4&max_pool_size=8&max_idle_pool_size=8&retry_attempts=2&retry_delay=0").or_panic
     group do |g|
       32.times do |t|
-        g.spawn_parallel do
+        g.spawn(unit: :new) do
           200.times do |k|
             n = t.to_i64 * 100000_i64 + k.to_i64
             case k % 4

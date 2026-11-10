@@ -13,7 +13,7 @@ import db/testing/dummy_driver::*
 
 # crystal's `String#to_slice`, which iyi's prelude has not.
 def bytes_of(text : String) : Bytes
-  Bytes.new(text.to_unsafe, text.bytesize).dup
+  Bytes.of(text).dup
 end
 
 class SimpleModel

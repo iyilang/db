@@ -7,7 +7,7 @@
 # pool knows the one it is given back by its `object_id`.
 #
 # **Every worker may share one pool.** Since iyi 0.19.0 a program's tasks
-# run on a pool of worker threads (`spawn_parallel`), and a pool kept in a
+# run on a pool of worker threads (`spawn(unit: :new)`), and a pool kept in a
 # constant is reached by tasks on all of them at once. v0.3.0 kept its
 # bookkeeping with no lock, from when iyi's tasks shared one thread, and two
 # workers checking out at once were handed one connection (db#1). Now:
@@ -41,6 +41,7 @@
 # when its arguments are - which `Pool(Connection)` is not, a connection not
 # being `Share`. The pool owns its resources as `Mutex(T)` owns its value:
 # a task reaches one only between a checkout and its release.
+@[Unsafe("Pool and PoolSlot are taken as Share on trust: the book hands each slot, and the resource in it, to one task at a time behind its lock")]
 module db/pooling
 
 import std/uri::{Params}

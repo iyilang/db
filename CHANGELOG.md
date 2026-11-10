@@ -1,3 +1,18 @@
+## Unreleased
+
+Requires iyi 0.21.0. Parallel tasks are spelled `spawn(unit: :new)` there,
+and 0.21.0 refuses raw memory and trust marks in a module that is not
+marked `@[Unsafe("why")]` (SPEC.md III.13), a mark 0.20.x refuses above a
+`module` header.
+
+* `db`, `db/pooling` and `db/testing/dummy_driver` are marked for the types
+  they hold `Share` on trust (`SharedBuilder`, `Pool` and `PoolSlot`,
+  `Made`), and `db/core` for the pool a `Database` leaves uninitialized
+  while it builds it, each mark saying why.
+* The tests and manual programs start parallel tasks with
+  `spawn(unit: :new)`, and the tests read a string's bytes with
+  `Bytes.of`.
+
 ## v0.4.0
 
 Requires iyi 0.20.0: a `Database` shared by tasks on every worker needs
