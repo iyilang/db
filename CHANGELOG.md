@@ -1,4 +1,4 @@
-## Unreleased
+## v0.5.0
 
 Requires iyi 0.21.0. Parallel tasks are spelled `spawn(unit: :new)` there,
 and 0.21.0 refuses raw memory and trust marks in a module that is not

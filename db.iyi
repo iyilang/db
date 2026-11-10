@@ -85,7 +85,7 @@ import std/mutex::{Mutex}
 import db/errors::*
 import db/core::*
 
-pub VERSION = "0.4.0"
+pub VERSION = "0.5.0"
 
 # The registered drivers. `Db.open` reads it on whichever worker opens a
 # database, so it is behind a lock.
