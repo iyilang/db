@@ -1,3 +1,15 @@
+## Unreleased
+
+Requires iyi 0.22.0. The source is v0.5.0's: it builds and its tests pass
+on 0.22.0 unchanged. The minimum moves with the drivers built on iyi-db,
+whose `iyi.sum` lines are 0.22.0's `h2:`, which 0.21.0 does not read, so
+an application that uses one is on 0.22.0 already. 0.22.0 refuses a
+parallel unit that reaches module state that is not `Share` through the
+code it calls, where 0.21.0 warned (SPEC.md III.4.5); iyi-db's state,
+the tests' and the manual programs' pass that check.
+
+* CI runs on iyi 0.22.0.
+
 ## v0.5.0
 
 Requires iyi 0.21.0. Parallel tasks are spelled `spawn(unit: :new)` there,
