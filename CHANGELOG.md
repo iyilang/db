@@ -1,4 +1,4 @@
-## Unreleased
+## v0.6.0
 
 Requires iyi 0.22.0. The source is v0.5.0's: it builds and its tests pass
 on 0.22.0 unchanged. The minimum moves with the drivers built on iyi-db,

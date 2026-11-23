@@ -32,7 +32,7 @@ iyi get github.com/iyilang/db --as db
 which writes this line to `iyi.mod`:
 
 ```
-require github.com/iyilang/db v0.5.0 as db
+require github.com/iyilang/db v0.6.0 as db
 ```
 
 Files then `import db` for the root module, `Db.open` and the driver
