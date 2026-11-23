@@ -13,7 +13,8 @@ require: errors are values, types are closed, and tasks are structured.
 
 ## Requirements
 
-iyi 0.21.0 or later: a `Database` shared by tasks on every worker needs
+iyi 0.22.0 or later, which the drivers built on iyi-db require and CI runs
+on. A `Database` shared by tasks on every worker needs
 parallel tasks (`spawn_parallel` in 0.19.0, spelled `spawn(unit: :new)`
 since 0.21.0, which is what the tests and manual programs write), the
 `@[Share]` defs and `SharedProc` that check the blocks it keeps (0.19.1),
