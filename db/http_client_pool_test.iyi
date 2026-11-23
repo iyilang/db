@@ -77,14 +77,25 @@ class TestServer
         end
         index = @requests_per_connection.size
         @requests_per_connection << 0
-        handlers.spawn do
-          serve(conn, index)
-          0
-        end
+        serve_later(handlers, conn, index)
       end
     end
     @listener.close
     @listening = false
+  end
+
+  # The connection's task, started from a def of its own so that it gets
+  # this connection and index. A block written in `listen`'s loop captures
+  # the loop's `conn` and `index`, one pair of variables for every turn:
+  # when the loop accepted the next connection before the task first ran,
+  # two tasks served the second connection, both reading its socket
+  # ("two fibers reading one fd"), and the first was never served - the
+  # macOS failures under load.
+  private def serve_later(handlers : IyiGroup, conn : IyiSocket, index : Int32) : Nil
+    handlers.spawn do
+      serve(conn, index)
+      0
+    end
   end
 
   private def serve(conn : IyiSocket, index : Int32) : Nil
